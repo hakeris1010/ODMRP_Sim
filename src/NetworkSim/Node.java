@@ -108,6 +108,9 @@ public class Node {
     private final Queue<Packet> pendingReceivePackets = new LinkedList<>();
     private final Queue<Packet> pendingSendPackets = new LinkedList<>();
 
+    // A set containing routes we are requesting at the moment, it helps to avoid loops.
+    private final SortedSet<String> routeRequestCache = new TreeSet<>();
+
     // If this is set, we must broadcast the join query next turn.
     private ODMRP_Proto.JoinQueryPacket joinQueryNext = null;
     private boolean waitingForJoinReplies = false;
@@ -133,17 +136,6 @@ public class Node {
                 this.connectNode(i);
             }
         }
-    }
-
-    /** =====================================================================
-     *  Private helper API.
-     */
-    private Node getNeighborByIP(String ip){
-        for(Node n : neighbors){
-            if(n.getIpAddress().equals(ip))
-                return n;
-        }
-        return null;
     }
 
     /** =====================================================================
@@ -191,39 +183,78 @@ public class Node {
      *  - route refresh timer value approached -> broadcast Join Query
      */
     public boolean process(){
+        // Firstly, check if we gotta send Join Queries, by analyzing timers and if there
+        // was a query specified on last iteration.
+        if(joinQueryNext != null || odmrp.isRouteRefreshNeeded()){
+            if(joinQueryNext == null){ // Timer approached -> broadcast JQ with our Multicast Source.
+                joinQueryNext =  prepareJoinQuery(multicastSourceAddress);
+            }
+            // Now join query is ready to broadcast.
+            for(Node n : neighbors){
+                n.acceptPacket(joinQueryNext);
+            }
+            // At the end, reset timer if this was caused by a timer, and set joinQueryNext to null.
+            // Also specify that we are expecting Join Replies at this moment.
+            odmrp.resetLastRouteRefresh();
+            joinQueryNext = null;
+            waitingForJoinReplies = true;
+            // Return true, indicating that we successfully completed an operation.
+            return true;
+        }
+
+        // At this moment, when no high-priority ODMRP queries are pending, we analyze pending send/receive packets.
         Packet pack = null;
+        boolean gottaSend = !pendingSendPackets.isEmpty() && (pendingReceivePackets.isEmpty() || sendReceiveModeToggle);
+
         // Check send packets (The packets this node originates and sends to the network).
-        if(!pendingSendPackets.isEmpty() && sendReceiveModeToggle){
-            pack = pendingSendPackets.peek();
+        if(gottaSend){
+            pack = pendingSendPackets.poll();
 
-            else { // Data packet.
-                Routing.RoutingEntry rt = null;
-                boolean sendSuccess;
-                do { // Check all possible routes.
-                    rt = odmrp.getRouteForDestination(pack.destAddr);
-                    sendSuccess = (rt!=null && getNeighborByIP(rt.nextHopAddress).acceptPacket(pack));
-                    // If packet send failed --> host is down, route is invalid --> delete route.
-                    if ( rt!=null && !sendSuccess )
-                        odmrp.removeRoutingEntry(rt);
-                } while (rt!=null && !sendSuccess);
-
-                // If no successful route found, we need to repair our routing table, by
-                // broadcasting a Join Query. Set this task for next iteration.
-                if(rt == null){
-                    joinQueryNext = prepareJoinQuery(pack.destAddr);
-                } else {
-                    pendingSendPackets.poll(); // If success, remove the packet from pending que.
+            // Check the packet mode. Multicasted packets are broadcasted if node is part of Forw.Group.
+            if( pack.mode == Packet.PACKETMODE_MULTICAST && odmrp.getGroupEntryByID(pack.destAddr, true) != null ||
+                pack.mode == Packet.PACKETMODE_BROADCAST ) {
+                // Todo: maybe check if at least one node accepted the packet.
+                // Just broadcast to all neighbors.
+                for(Node n : neighbors){
+                    n.acceptPacket(pack);
+                }
+            }
+            // For unicasted packets, route according to routing table.
+            else if(pack.mode == Packet.PACKETMODE_UNICAST) {
+                // Firstly check if the route for this packet is unknown, but already being searched for.
+                if (!routeRequestCache.contains(pack.destAddr)) {
+                    // If no successful route found, we need to repair our routing table by broadcasting a JQ.
+                    if (!routePacket(pack)) {
+                        // Put the UnSent packet at the end of the Queue for resending when route is known,
+                        // and add the destination to routes currently being requested. Request a route on next iteration
+                        // by a Join Query. Note that on Multicast Group field we specify the Destination IP of the packet,
+                        // so the node with that IP will send back a Join Reply.
+                        pendingSendPackets.offer(pack);
+                        routeRequestCache.add(pack.destAddr);
+                        joinQueryNext = prepareJoinQuery(pack.destAddr);
+                    }
+                } else { // If packet's route is being searched for, we can move to Receive Packet queue.
+                    pendingSendPackets.offer(pack);
+                    gottaSend = false;
                 }
             }
         }
-        // Check receive packets
-        if(!pendingReceivePackets.isEmpty()){
-            pack = pendingReceivePackets.poll();
+        // Check receive packets, if there are pending and no sending were done.
+        if(!pendingReceivePackets.isEmpty() && !gottaSend){
+            pack = pendingReceivePackets.peek();
 
-        }
-        // Checks timers
-        if( odmrp.isRouteRefreshNeeded() ){
+            // Check the type of packet got: Join Query, Join Reply, Data.
+            if(pack instanceof ODMRP_Proto.JoinQueryPacket){
 
+            }
+            else if (pack instanceof ODMRP_Proto.JoinReplyPacket){
+
+            }
+            else{ // Data Packet.
+                if(pack.destAddr.equals(this.ipAddress)){ // Check if this packet is meant for us.
+
+                }
+            }
         }
 
         sendReceiveModeToggle = !sendReceiveModeToggle; // Switch between receive/send modes.
@@ -255,9 +286,11 @@ public class Node {
     }
 
     /** - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-     * ODMRP Land.
+     * Private Helper API
      *
-     * Sends ODMRP Join Query packet.
+     * Method Prepares ODMRP Join Query packet.
+     * @param multicastAddr - value of the Multicast Group field of the packet. Can be assigned
+     *          to Multicast Group Address if multicasting, or Destination IP if unicasting.
      */
     private ODMRP_Proto.JoinQueryPacket prepareJoinQuery(String multicastAddr){
         ODMRP_Proto.JoinQueryPacket joinQuery = new ODMRP_Proto.JoinQueryPacket();
@@ -271,6 +304,36 @@ public class Node {
         joinQuery.previousHopIP = this.ipAddress;
         // No GPS fields are used.
         return joinQuery;
+    }
+
+    /**
+     * Returns the Node of the neighbor with IP Address specified.
+     * @param ip - address of a neighbor
+     * @return neighbor node, if exists, or null, if no node with that IP found.
+     */
+    private Node getNeighborByIP(String ip){
+        for(Node n : neighbors){
+            if(n.getIpAddress().equals(ip))
+                return n;
+        }
+        return null;
+    }
+
+    private boolean routePacket(Packet pack){
+        Routing.RoutingEntry rt;
+        // Check all possible routes.
+        while(true){
+            rt = odmrp.getRouteForDestination(pack.destAddr);
+            if(rt == null)
+                break; // Null means no possible routes.
+            // If packet successfully sent, break loop.
+            if( getNeighborByIP(rt.nextHopAddress).acceptPacket(pack) )
+                break;
+            else // If packet send failed --> host is down, route is invalid --> delete route.
+                odmrp.removeRoutingEntry(rt);
+        }
+        // Return value indicates if routed successfully.
+        return (rt != null);
     }
 
 }

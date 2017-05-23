@@ -142,10 +142,17 @@ public class ODMRP_Proto extends Routing {
     public boolean removeGroupTableEntry(ForwardingGroupTableEntry e){
         return forwardingGroupTable.remove(e);
     }
-    public ForwardingGroupTableEntry getGroupEntryByID(String groupID){
+
+    public ForwardingGroupTableEntry getGroupEntryByID(String groupID, boolean deleteIfExpired){
         ForwardingGroupTableEntry dummy = new ForwardingGroupTableEntry(groupID, 0), en;
         en = ((TreeSet<ForwardingGroupTableEntry>)forwardingGroupTable).ceiling( dummy );
-        if(en.equals(dummy))
+        // Delete group entry if timed out.
+        if( en!=null && en.equals(dummy) && deleteIfExpired &&
+            System.currentTimeMillis() - en.lastRefreshedTime > DEFAULT_FORWARDING_TIMEOUT){
+              forwardingGroupTable.remove(en);
+              en = null;
+        }
+        if(en!=null && en.equals(dummy))
             return en;
         return null;
     }
@@ -154,7 +161,7 @@ public class ODMRP_Proto extends Routing {
      * Timer API
      */
     public long getLastRouteRefresh(){ return lastRouteRefresh; }
-    public void refreshLastRouteRefresh(){
+    public void resetLastRouteRefresh(){
         lastRouteRefresh = System.currentTimeMillis();
     }
     public boolean isRouteRefreshNeeded(){
