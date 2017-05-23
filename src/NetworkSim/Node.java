@@ -25,30 +25,39 @@ import java.util.*;
  *
  *    In case of ODMRP (That we're developing):
  *
- *    3.1.1. If Node has Multicast Packets available, it sends a Join Query to it's neighbors,
- *           specifying it's IP as Source Address, and it's multicast group address.
- *       - The query is broadcasted through the whole network.
+ *   3.1. If current node has packets to send (multicast or unicast), and doesn't know any
+ *        routes, it advertises itself and at the same time requests routes by broadcasting a
+ *        Join Query packet.
+ *
+         - The neighbors broadcast this Join Query to their neighbors, so the query
+ *         propagates through the whole Ad-Hoc network.
+ *
  *       - This way current node advertises it's presence on the network, so other nodes
  *         could update their routing tables for route to this node.
+ *
  *       - The multicast-interested nodes send the Join Replies to current node, which has
  *         became the multicast-source. The reply propagation process builds a Forwarding group
  *         for routing of multicast packets belonging to this group.
  *
- *    3.1.2. When Join Replies reach current node, it updates it's routing table, and
- *           sends the multicast traffic through the now-updated forwarding group.
+ *   3.1.1. If Node has Multicast Packets available, it sends a Join Query to it's neighbors,
+ *          specifying it's IP as Source Address, and the specific Multicast Group address.
  *
- *    3.2. If node hasn't got any Multicast packets, but instead has Unicast packets available,
- *         it doesn't send Join Query --> doesn't get any Join Replies.
- *         So it doesn't know any routes to wanted destinations.
+ *   3.1.2. If node wants to Unicast a packet, but no route is known, in Join Query, it
+ *          specifies the Unicast Destination IP in the Multicast Group Address field.
+ *          - This way, when the node with that Destination IP gets this Join Query, it
+ *            broadcasts a Join Reply. This way current node gets the route needed.
  *
- *         - If this is the situation, the ODMPR doesn't provide specification for route
- *           resolution. The node must use other, Unicast-oriented RP's to determine the route
- *           to the wanted Unicast destination.
+ *          - TODO: This mechanism will be updated with the UnicastRoute flag in Join Query.
+ *            This way the first node knowing the route to destination will respond and no
+ *            longer broadcast.
  *
- *         - We implemented a simple mechanism of getting required data by querying neighbor's
- *           routing tables to get the route data needed.
+ *   3.2. Join Replies from multicast receivers reach the current node, and current node
+ *        updates it's routing table.
+ *        - Then it can send the multicast traffic through the now-updated forwarding group.
+ *        - While the Replies are propagating through a network, the nodes which process them
+ *          update their routing tables and forwarding group memberships.
  *
- *   3.3. If all routes are determined, the current node sends it's packets over the network.
+ *   3.3. When all routes are determined, the current node sends it's packets over the network.
  *
  *        - In case of Multicasting, the packets are broadcasted, and intermediate nodes check
  *          the source IP (multicast group's address).
@@ -62,11 +71,24 @@ import java.util.*;
  *
  *  =========================================================================================
  *
- *  In our network model, we presume Static IP and Multicast addresses.
+ *  - In our network model, we presume Static IP and Multicast addresses.
+ *
+ *  - Node data processing must happen on a schedule thread. No processing is invoked directly
+ *    when nodes communicate between themselves - all data sent to other nodes is first put
+ *    into the pendingReceivePackets queue.
+ *
+ *  - When scheduler calls process() method on a node, it processes the packets it has got
+ *    in a queue, and updates timers and stuff.
+ *
+ *  - Note that process() won't run long tasks, it only runs 1 "operation", like join query
+ *    or reply processing, or packet forwarding.
  *
  */
 
 public class Node {
+    // Is node working at the moment
+    private boolean down = false;
+
     // Node's IP (assigned by itself (?))
     private String ipAddress;
 
@@ -80,10 +102,18 @@ public class Node {
     private final Set<Node> neighbors = Collections.synchronizedSortedSet(new TreeSet<>());
 
     // The tables and other structures of Routing Protocol being used (in this case ODMRP).
-    private final ODMRP_Proto odmrpRoutingData = new ODMRP_Proto();
+    private final ODMRP_Proto odmrp = new ODMRP_Proto();
 
-    // EXPERIMENTAL: unicast route queries currently processed.
-    private final List<ODMRP_Proto.MessageCacheEntry> unicastRequestCache = new ArrayList<>();
+    // Pending packet queues
+    private final Queue<Packet> pendingReceivePackets = new LinkedList<>();
+    private final Queue<Packet> pendingSendPackets = new LinkedList<>();
+
+    // If this is set, we must broadcast the join query next turn.
+    private ODMRP_Proto.JoinQueryPacket joinQueryNext = null;
+    private boolean waitingForJoinReplies = false;
+    private boolean sendReceiveModeToggle = false;
+
+    private static final int PENDING_PACKET_QUESIZE = 256;
 
     /**
      * Constructors.
@@ -105,12 +135,31 @@ public class Node {
         }
     }
 
-    /**
-     * Simple getters for basic properties.
+    /** =====================================================================
+     *  Private helper API.
      */
-    String getIpAddress(){ return ipAddress; }
-    String getMulticastSourceAddress(){ return multicastSourceAddress; }
-    String[] getParticipatedMulticastGroups(){ return (String[])(multicastGroups.toArray()); }
+    private Node getNeighborByIP(String ip){
+        for(Node n : neighbors){
+            if(n.getIpAddress().equals(ip))
+                return n;
+        }
+        return null;
+    }
+
+    /** =====================================================================
+     * Node Property Modification API.
+     * - Simple getters and setters for basic properties.
+     * - Can be called from inside or outside of the Node.
+     */
+    public String getIpAddress(){ return ipAddress; }
+    public String getMulticastSourceAddress(){ return multicastSourceAddress; }
+    public String[] getParticipatedMulticastGroups(){ return (String[])(multicastGroups.toArray()); }
+
+    public void addMulticastGroup(String... groupAddr){
+        multicastGroups.addAll(Arrays.asList(groupAddr));
+    }
+    public boolean gotPendingReceivePackets(){ return !pendingReceivePackets.isEmpty(); }
+    public boolean gotPendingSendPackets(){ return !pendingSendPackets.isEmpty(); }
 
     /**
      * Adds new node to the current node's network.
@@ -121,85 +170,107 @@ public class Node {
      * @param node - the node to add to current node's network.
      */
     public void connectNode(Node node){
+        System.out.println("["+this.ipAddress+"]: Connecting node: "+node);
         neighbors.add(node);
     }
 
-    /** EXPERIMENTAL:
-     * Simple method to get the route to Unicast destination.
-     * If this node's Routing Table doesn't contain required data, ask neighbors.
-     * - DON'T USE THIS METHOD for general purpose, because it causes high congestion because of
-     *   flooding whole network with this type of packets if route can't be found.
-     * @param lastHop - the neighbor node sending this packet
-     * @param destination - the IP address which's route is being searched for.
-     * @param sourceAddr - the IP of the original node requesting the route.
-     * @param ID - the unique identifier of current query propagation.
-     * - By using ID and sourceAddr we make sure that no routing loops are made.
+    /** =====================================================================
+     *  Node Action-Invoking API.
+     *  - These methods must be called from the Schedule Thread, or anywhere outside the Node.
+     *
+     *  Process the pending data and/or update state.
+     *  Executes exactly ONE Routing Operation, which may be (but not limited to) one of these:
+     *  - Pending send data:
+     *    - no route is known -> broadcast Join Query.
+     *    - route is known -> send multi/unicast data to specific routes.
+     *  - pending receive data: packet is:
+     *    - Join Query - if Multicast Receiver, send Join Reply, and broadcast the query.
+     *    - Join Reply - check the next hop and stuff, update stuff, send.
+     *    - Multicast Data - if Forwarding Group, forward where needed.
+     *    - Unicast Data - send according to Routing Table.
+     *  - route refresh timer value approached -> broadcast Join Query
      */
-    public ODMRP_Proto.RoutingTableEntry getUnicastRoute(Node lastHop, String destination, String sourceAddr, long ID){
-        // Check if this query is already being processed (called by looper)
-        ODMRP_Proto.MessageCacheEntry dummyEntry = new ODMRP_Proto.MessageCacheEntry(sourceAddr, ID);
-        if(unicastRequestCache.contains(dummyEntry))
-            return null;
-        unicastRequestCache.add(dummyEntry);
+    public boolean process(){
+        Packet pack = null;
+        // Check send packets (The packets this node originates and sends to the network).
+        if(!pendingSendPackets.isEmpty() && sendReceiveModeToggle){
+            pack = pendingSendPackets.peek();
 
-        ODMRP_Proto.RoutingTableEntry min = null, rt;
-        // Firstly, try to find route in our own table.
-        rt = odmrpRoutingData.getRouteForDestination(destination);
-        // If we don't have a route, query neighbors
-        if(rt == null){
-            for(Node n : neighbors){
-                if(n != lastHop) {
-                    // Propagate recursively through neighbors.
-                    rt = n.getUnicastRoute(this, destination, sourceAddr, ID);
-                    if(rt != null){
-                        long costToNeigh = odmrpRoutingData.getRouteForDestination(n.ipAddress).cost;
-                        if(min==null) {
-                            min = rt;
-                            min.cost = rt.cost + costToNeigh;
-                        } else {
-                            if(rt.cost + costToNeigh < min.cost){
-                                min = rt;
-                                min.cost = rt.cost + costToNeigh;
-                            }
-                        }
-                    }
+            else { // Data packet.
+                Routing.RoutingEntry rt = null;
+                boolean sendSuccess;
+                do { // Check all possible routes.
+                    rt = odmrp.getRouteForDestination(pack.destAddr);
+                    sendSuccess = (rt!=null && getNeighborByIP(rt.nextHopAddress).acceptPacket(pack));
+                    // If packet send failed --> host is down, route is invalid --> delete route.
+                    if ( rt!=null && !sendSuccess )
+                        odmrp.removeRoutingEntry(rt);
+                } while (rt!=null && !sendSuccess);
+
+                // If no successful route found, we need to repair our routing table, by
+                // broadcasting a Join Query. Set this task for next iteration.
+                if(rt == null){
+                    joinQueryNext = prepareJoinQuery(pack.destAddr);
+                } else {
+                    pendingSendPackets.poll(); // If success, remove the packet from pending que.
                 }
             }
-            rt = min;
-            // If we haven't got a route, add it.
-            this.odmrpRoutingData.addRoutingTableEntry(rt);
         }
-        return rt;
+        // Check receive packets
+        if(!pendingReceivePackets.isEmpty()){
+            pack = pendingReceivePackets.poll();
+
+        }
+        // Checks timers
+        if( odmrp.isRouteRefreshNeeded() ){
+
+        }
+
+        sendReceiveModeToggle = !sendReceiveModeToggle; // Switch between receive/send modes.
+        return pack != null;
     }
 
-    /** =============================================================================
+    public void sendPacket(Packet pack){
+        if(pendingSendPackets.size() >= PENDING_PACKET_QUESIZE)
+            pendingSendPackets.poll();
+        pendingSendPackets.offer(pack);
+    }
+
+    /** =====================================================================
+     *  Inter-Node/Intra-Node API
+     *  - These methods must be called only Inside the Node Class.
+     *  - That's how routing and data exchange between Nodes happen.
+     *
+     * Put a packet to be processed next time node is scheduled.
+     * @param pack - a packet.
+     */
+    private boolean acceptPacket(Packet pack){
+        if(this.down) // If Node Down flag set, don't perform anything.
+            return false;
+
+        if(pendingReceivePackets.size() >= PENDING_PACKET_QUESIZE)
+            pendingReceivePackets.poll();
+        pendingReceivePackets.offer(pack);
+        return true;
+    }
+
+    /** - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
      * ODMRP Land.
      *
      * Sends ODMRP Join Query packet.
      */
-    public void broadcastJoinQuery(){
+    private ODMRP_Proto.JoinQueryPacket prepareJoinQuery(String multicastAddr){
         ODMRP_Proto.JoinQueryPacket joinQuery = new ODMRP_Proto.JoinQueryPacket();
         // Fill in the data
         joinQuery.type = ODMRP_Proto.JOINQUERY_TYPE;
         joinQuery.timeToLive = ODMRP_Proto.DEFAULT_TTL;
         joinQuery.hopCount = 0;
-        joinQuery.multicastGroupIP = this.multicastSourceAddress;
+        joinQuery.multicastGroupIP = multicastAddr;
         joinQuery.sequeceNumber = new Random().nextInt();
         joinQuery.sourceIP = this.ipAddress; // Source and previousHop - this one.
         joinQuery.previousHopIP = this.ipAddress;
         // No GPS fields are used.
-
-        // Data filled --> broadcast!
-        for(Node n : neighbors){
-            n.acceptJoinQuery(joinQuery);
-        }
-    }
-
-    /**
-     * Accepts ODMRP Join Query, and processes it.
-     */
-    public void acceptJoinQuery(ODMRP_Proto.JoinQueryPacket query){
-
+        return joinQuery;
     }
 
 }

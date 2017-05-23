@@ -1,7 +1,5 @@
 package NetworkSim;
 
-import sun.reflect.generics.tree.Tree;
-
 import java.util.*;
 
 /**
@@ -9,34 +7,10 @@ import java.util.*;
  * Contains state classes and tables maintained by each node,
  * and the API to use them.
  */
-public class ODMRP_Proto {
+public class ODMRP_Proto extends Routing {
     /**
-     * Table entry data
+     * Table containing the multicast groups this node is forwarding.
      */
-    public static class RoutingTableEntry implements Comparable{
-        public String destinationAddress;
-        public String nextHopAddress;
-        long cost;
-
-        public RoutingTableEntry(String dest, String nextHop){ destinationAddress=dest; nextHopAddress=nextHop; }
-
-        @Override
-        public boolean equals(Object o){ // We just perform compareTo here.
-            return compareTo(o)==0;
-        }
-
-        @Override
-        public int compareTo(Object o) {
-            // MAYBE: Compare only the destination address. Only one route to destinatio
-            if(o instanceof RoutingTableEntry){
-                int c1 = destinationAddress.compareTo(((RoutingTableEntry)o).destinationAddress);
-                if(c1 != 0) return c1;
-                return nextHopAddress.compareTo(((RoutingTableEntry)o).nextHopAddress);
-            }
-            return 0xdeadbeef; // Not even the same type.
-        }
-    }
-
     public static class ForwardingGroupTableEntry implements Comparable{
         public String groupID;
         public long lastRefreshedTime;
@@ -57,6 +31,9 @@ public class ODMRP_Proto {
         }
     }
 
+    /**
+     * Cache for identifying duplicate Join Query/Reply packets.
+     */
     public static class MessageCacheEntry implements Comparable {
         public String sourceAddress;
         public long packetID;
@@ -82,7 +59,7 @@ public class ODMRP_Proto {
     /**
      * Join Query Header Format
      */
-    public static class JoinQueryPacket{
+    public static class JoinQueryPacket extends Packet {
         public byte type, reserved, timeToLive, hopCount;
         public String multicastGroupIP;
         public int sequeceNumber;
@@ -99,7 +76,7 @@ public class ODMRP_Proto {
     /**
      * Join Reply Header Format
      */
-    public static class JoinReplyPacket{
+    public static class JoinReplyPacket extends Packet {
         public static class SenderNextHop{
             String multicastGroupIP;
             String previousHopIP;
@@ -122,17 +99,21 @@ public class ODMRP_Proto {
     public static final byte JOINQUERY_TYPE = 0x01;
     public static final byte DEFAULT_TTL = 32;
 
+    // Intervals, in milliseconds.
+    public static final long DEFAULT_ROUTE_REFRESH = 1000;
+    public static final long DEFAULT_FORWARDING_TIMEOUT = 3000;
+
     /** =============================================================================
      * The state data tables.
      */
     // Message cache. A fixed-size queue, used to track duplicate Join Queries.
     private final SortedSet<MessageCacheEntry> messageCache = new TreeSet<>();
 
-    // Routing table. Used to determine path of the packet.
-    private final SortedSet<RoutingTableEntry> routingTable = new TreeSet<>();
-
     // Forwarding group table. Contains information about Multicast groups node is in.
     private final SortedSet<ForwardingGroupTableEntry> forwardingGroupTable = new TreeSet<>();
+
+    // Timers
+    private long lastRouteRefresh;
 
     /**
      * API for easily getting required info and modifying the tables.
@@ -153,46 +134,6 @@ public class ODMRP_Proto {
     }
 
     /**
-     * Routing table API.
-     */
-    public void addRoutingTableEntry(RoutingTableEntry entry){
-        RoutingTableEntry e = ((TreeSet<RoutingTableEntry>)routingTable).ceiling(entry);
-        if(e.equals(entry)){
-            // If equal entry found, just update the cost (because comparison is done by nextHop and dest.
-            e.cost = entry.cost;
-        } else {
-            routingTable.add(entry);
-        }
-    }
-    public RoutingTableEntry getRouteForDestination(String address){
-        RoutingTableEntry min = null;
-        for(RoutingTableEntry e : routingTable){
-            if(e.destinationAddress.equals(address)){
-                if(min==null){
-                    min = e;
-                } else {
-                    if(e.cost < min.cost)
-                        min = e;
-                }
-            }
-        }
-        return min;
-    }
-    public boolean removeRoutingTableEntry(RoutingTableEntry entry){
-        return routingTable.remove(entry);
-    }
-    public int removeAllRoutesToDestination(String dest){
-        int ctr=0;
-        for(RoutingTableEntry e : routingTable){
-            if(e.destinationAddress.equals(dest)) {
-                routingTable.remove(e);
-                ctr++;
-            }
-        }
-        return ctr;
-    }
-
-    /**
      * Forwarding Group API
      */
     public boolean addGroupTableEntry(ForwardingGroupTableEntry e) {
@@ -209,6 +150,15 @@ public class ODMRP_Proto {
         return null;
     }
 
-
+    /**
+     * Timer API
+     */
+    public long getLastRouteRefresh(){ return lastRouteRefresh; }
+    public void refreshLastRouteRefresh(){
+        lastRouteRefresh = System.currentTimeMillis();
+    }
+    public boolean isRouteRefreshNeeded(){
+        return (System.currentTimeMillis() - lastRouteRefresh > DEFAULT_ROUTE_REFRESH);
+    }
 
 }
