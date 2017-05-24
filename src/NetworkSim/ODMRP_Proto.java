@@ -64,6 +64,14 @@ public class ODMRP_Proto extends Routing {
         String multicastGroupIP;
         String previousHopIP;
         int sequenceNumber;
+
+        { mode = Packet.PACKETMODE_BROADCAST; }
+
+        @Override
+        public String toString(){
+            return "ODMRPPacket: src: "+sourceAddr+", multiGroup: "+multicastGroupIP+", prevHop: "+previousHopIP+
+                   "seqNum: "+sequenceNumber;
+        }
     }
 
     /**
@@ -79,6 +87,11 @@ public class ODMRP_Proto extends Routing {
         byte[] payload;
 
         { type = JOINQUERY_TYPE; }
+
+        @Override
+        public String toString(){
+            return "JoinQuery: \n"+super.toString()+"\n ttl: "+(int)timeToLive+", hops: "+(int)hopCount+"\n";
+        }
     }
 
     /**
@@ -99,9 +112,18 @@ public class ODMRP_Proto extends Routing {
         byte count;
         boolean ackReq, forwardGroup;
 
-        List<SenderNextHop> senderData = new ArrayList<>();
+        ArrayList<SenderNextHop> senderData = new ArrayList<>();
 
         { type = JOINREPLY_TYPE; }
+
+        @Override
+        public String toString(){
+            String ret="JoinReply: \n"+super.toString()+"\n Senders:\n";
+            for(SenderNextHop s : senderData){
+                ret+="  sender: "+s.senderIP+", nextHop: "+s.nextHopIP+"\n";
+            }
+            return ret;
+        }
     }
 
     /**
@@ -113,8 +135,8 @@ public class ODMRP_Proto extends Routing {
     public static final byte DEFAULT_TTL = 32;
 
     // Intervals, in milliseconds.
-    public static final long DEFAULT_ROUTE_REFRESH = 1000;
-    public static final long DEFAULT_FORWARDING_TIMEOUT = 3000;
+    public static final long DEFAULT_ROUTE_REFRESH = 200;
+    public static final long DEFAULT_FORWARDING_TIMEOUT = 800;
 
     /** =============================================================================
      * The state data tables.
@@ -149,11 +171,11 @@ public class ODMRP_Proto extends Routing {
     /**
      * Forwarding Group API
      */
-    public boolean addGroupTableEntry(ForwardingGroupTableEntry e) {
-        return forwardingGroupTable.add(e);
-    }
     public boolean removeGroupTableEntry(ForwardingGroupTableEntry e){
         return forwardingGroupTable.remove(e);
+    }
+    public void addGroupToForwardingTable(String groupAddr){
+
     }
 
     public ForwardingGroupTableEntry getGroupEntryByID(String groupID, boolean deleteIfExpired){
@@ -179,6 +201,22 @@ public class ODMRP_Proto extends Routing {
     }
     public boolean isRouteRefreshNeeded(){
         return (System.currentTimeMillis() - lastRouteRefresh > DEFAULT_ROUTE_REFRESH);
+    }
+
+    /**
+     * Table-To-String API
+     */
+    public String forwardingTableToString(){
+        StringBuilder bld = new StringBuilder();
+        bld.append(" ------------------ ---------------- \n");
+        bld.append("| Group Address    | Last Refresh   |\n");
+        bld.append(" ================== ================ \n");
+        for(ForwardingGroupTableEntry e : forwardingGroupTable){
+            bld.append("| ").append(String.format("%1$16s", e.groupID));
+            bld.append(" | ").append(String.format("%1$14s", e.lastRefreshedTime)).append(" |");
+            bld.append("\n ------------------ ---------------- \n");
+        }
+        return bld.toString();
     }
 
 }

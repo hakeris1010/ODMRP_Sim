@@ -17,7 +17,7 @@ public class Packet implements Serializable {
 
     int mode;
 
-    public Packet(){}
+    Packet(){}
     public Packet(int sendMode){
         mode = sendMode;
     }

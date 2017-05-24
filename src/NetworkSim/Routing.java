@@ -45,7 +45,7 @@ public class Routing {
      */
     public void addRoutingEntry(RoutingEntry entry){
         RoutingEntry e = ((TreeSet<RoutingEntry>)routingTable).ceiling(entry);
-        if(e.equals(entry)){
+        if(e!=null && e.equals(entry)){
             // If equal entry found, just update the cost (because comparison is done by nextHop and dest.
             e.cost = entry.cost;
         } else {
@@ -78,5 +78,23 @@ public class Routing {
             }
         }
         return ctr;
+    }
+
+    /**
+     * Table-to-String converter.
+     * @return string representation of routing table.
+     */
+    public String routingTableToString(){
+        StringBuilder bld = new StringBuilder();
+        bld.append(" ------------------ ------------------ ---------- \n");
+        bld.append("| Destination      | Next Hop         | Cost     |\n");
+        bld.append(" ================== ================== ========== \n");
+        for(RoutingEntry e : routingTable){
+            bld.append("| ").append(String.format("%1$16s", e.destinationAddress));
+            bld.append(" | ").append(String.format("%1$16s", e.nextHopAddress));
+            bld.append(" | ").append(String.format("%1$8s", e.cost)).append(" |");
+            bld.append("\n ------------------ ------------------ --------- \n");
+        }
+        return bld.toString();
     }
 }
