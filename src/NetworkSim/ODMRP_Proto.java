@@ -55,41 +55,53 @@ public class ODMRP_Proto extends Routing {
             return 0xdeadbeef; // Not even the same type.
         }
     }
+    /**
+     * Base ODMRP Routing Data Packet
+     */
+    public static class ODMRPPacket extends Packet{
+        byte type;
+        String sourceAddr;
+        String multicastGroupIP;
+        String previousHopIP;
+        int sequenceNumber;
+    }
 
     /**
      * Join Query Header Format
      */
-    public static class JoinQueryPacket extends Packet {
-        public byte type, reserved, timeToLive, hopCount;
-        public String multicastGroupIP;
-        public int sequeceNumber;
-        public String sourceIP;
-        public String previousHopIP;
+    public static class JoinQueryPacket extends ODMRPPacket {
+        byte timeToLive, hopCount;
         // GPS Data
         int prevHopX, prevHopY;
         short prevHopSpeed, prevHopDirection;
         int minExpTime;
-        // Payload at the end.
+        // Payload attached at the end.
         byte[] payload;
+
+        { type = JOINQUERY_TYPE; }
     }
 
     /**
      * Join Reply Header Format
      */
-    public static class JoinReplyPacket extends Packet {
+    public static class JoinReplyPacket extends ODMRPPacket {
         public static class SenderNextHop{
-            String multicastGroupIP;
-            String previousHopIP;
-            int routeExpirationTime;
+            String senderIP;
+            String nextHopIP;
+            int routeExpirationTime = 0;
+
+            SenderNextHop(RoutingEntry e){
+                senderIP = e.destinationAddress;
+                nextHopIP = e.nextHopAddress;
+            }
         }
 
-        byte type, count;
+        byte count;
         boolean ackReq, forwardGroup;
-        String multicastGroupIP;
-        String previousHopIP;
-        int sequenceNumber;
 
-        List<SenderNextHop> senderData;
+        List<SenderNextHop> senderData = new ArrayList<>();
+
+        { type = JOINREPLY_TYPE; }
     }
 
     /**
@@ -97,6 +109,7 @@ public class ODMRP_Proto extends Routing {
      */
     public static final int MSG_CACHE_SIZE = 2048;
     public static final byte JOINQUERY_TYPE = 0x01;
+    public static final byte JOINREPLY_TYPE = 0x02;
     public static final byte DEFAULT_TTL = 32;
 
     // Intervals, in milliseconds.
