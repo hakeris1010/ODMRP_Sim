@@ -92,6 +92,12 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 
 public class Node implements Comparable {
+
+    public static class NodeConnectException extends RuntimeException{
+        NodeConnectException(){}
+        NodeConnectException(String what){ super(what); }
+    }
+
     // Is node working at the moment
     private boolean down = false;
 
@@ -198,12 +204,26 @@ public class Node implements Comparable {
      * - Authentication and stuff happens there.
      * - Notice that this method adds node at Level 3 (Network).
      * @param node - the node to add to current node's network.
+     * @param firstWay - true if first-way connection is being made.
+     *                 False if first-way already made, and making back-way connection.
      */
-    public void connectNode(Node node){
-        if(neighbors.add(node)) {
-            node.connectNode(this);
+    private void connectNodePriv(Node node, boolean firstWay) throws NodeConnectException {
+        // Add only if node hasn't got same IP as this, and if there isn't a neighbor with the IP of node being added.
+        if(!node.ipAddress.equals(this.ipAddress) && neighbors.add(node)) {
+            if(firstWay)
+                node.connectNodePriv(this, false);
             Logger.logfn("["+this.ipAddress+"] connected with ["+node.ipAddress+"]");
         }
+        else {
+            throw new NodeConnectException("Connecting node "+this.ipAddress+" to node "+node.ipAddress);
+        }
+    }
+
+    /**
+     * Public front-end to connectNodePriv()
+     */
+    public void connectNode(Node node){
+        connectNodePriv(node, true);
     }
 
     /**
@@ -421,7 +441,10 @@ public class Node implements Comparable {
         // Add packet to the pending packet queue.
         if(pendingReceivePackets.size() >= PENDING_PACKET_QUESIZE)
             pendingReceivePackets.poll();
-        pendingReceivePackets.offer(pack);
+
+        // Add a New Copy of the packet. We must make a copy so the modified version while processing
+        // won't be the same instance other nodes got.
+        pendingReceivePackets.offer( (Packet)(pack.clone()) );
 
         Logger.logfn("["+this.ipAddress+"]: Accepted packet! Type: "+
                 (pack instanceof ODMRP_Proto.JoinQueryPacket ? "JoinQuery" :

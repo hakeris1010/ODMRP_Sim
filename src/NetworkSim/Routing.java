@@ -93,7 +93,7 @@ public class Routing {
             bld.append("| ").append(String.format("%1$16s", e.destinationAddress));
             bld.append(" | ").append(String.format("%1$16s", e.nextHopAddress));
             bld.append(" | ").append(String.format("%1$8s", e.cost)).append(" |");
-            bld.append("\n ------------------ ------------------ --------- \n");
+            bld.append("\n ------------------ ------------------ ---------- \n");
         }
         return bld.toString();
     }

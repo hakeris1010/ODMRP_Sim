@@ -77,54 +77,68 @@ public class Network {
         // Add nodes to network.
         /* Topology - simple:
            A - B - C
-                 \ D
+                 \ |
+                   D - E
          */
-
         Node A = new Node(activeNodes, "192.168.0.101", null, Arrays.asList("224.0.0.2"), null);
         Node B = new Node(activeNodes, "192.168.0.100", null);
         Node C = new Node(activeNodes, "192.168.0.102", null, Arrays.asList("224.0.0.1"), null);
-        //Node D = new Node(activeNodes, "192.168.0.103", null, Arrays.asList("224.0.0.1"), null);
+        Node D = new Node(activeNodes, "192.168.0.103", null, Arrays.asList("224.0.0.1"), null);
+        Node E = new Node(activeNodes, "192.168.0.104", null, Arrays.asList("224.0.0.1"), null);
 
         netNodes.add(A);
         netNodes.add(B);
         netNodes.add(C);
-        //netNodes.add(D);
+        netNodes.add(D);
+        netNodes.add(E);
 
-        A.connectNode(B);
-        B.connectNode(C);
-
-        System.out.println();
-        for(Node i : netNodes){
-            System.out.println(i);
-        }
-
-        scheduleThread.start();
-
-        // Wait X ms, and stop.
         try {
-            Thread.sleep(900);
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-        }
+            B.connectNode(A);
+            B.connectNode(C);
+            B.connectNode(D);
 
-        endRequest.set(true);
-        synchronized (this){
-            this.notify();
-        }
+            C.connectNode(D);
+            D.connectNode(E);
 
-        //Wait until MAX_REFRESH refreshes happened.
-        /*try {
-            synchronized (this) {
-                this.wait();
+            System.out.println("\n= = = = = = = = = = = = = = = = = = = = =\n" +
+                               "Everything BEFORE THE SCHEDULING:\n");
+            System.out.println();
+            for(Node i : netNodes){
+                System.out.println(i);
             }
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-        }*/
 
-        // At the end of 100 millisecond Join Query propagation, check the Routing Tables.
-        System.out.println("\n===============================\nPropagation End!\nRouting tables:\n");
-        for(Node i : netNodes){
-            System.out.println("\n["+i.getIpAddress()+"]: Routing Table:\n"+ i.getRoutingTable() );
+            scheduleThread.start();
+
+            // Wait X ms, and stop.
+            try {
+                Thread.sleep(2000);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+
+            endRequest.set(true);
+            synchronized (this){
+                this.notify();
+            }
+
+            //Wait until MAX_REFRESH refreshes happened.
+            /*try {
+                synchronized (this) {
+                    this.wait();
+                }
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }*/
+
+        } catch ( Exception e ){
+            System.out.println("\n^^^^^^^^^^^^^^^\nException occured: "+e);
+        } finally {
+            // At the end of Packet Scheduler propagation, check the Routing Tables.
+            System.out.println("\n===============================\nPropagation End!\nRouting tables:\n");
+            for(Node i : netNodes){
+                //System.out.println(i);
+                System.out.println("\n["+i.getIpAddress()+"]: Routing Table:\n"+ i.getRoutingTable() );
+            }
         }
     }
 }

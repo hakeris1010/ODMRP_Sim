@@ -3,7 +3,7 @@ package NetworkSim;
 import java.io.Serializable;
 import java.util.regex.Pattern;
 
-public class Packet implements Serializable {
+public abstract class Packet implements Serializable, Cloneable {
     static final int PACKETMODE_NOADDR    = 0;
     static final int PACKETMODE_UNICAST   = 1;
     static final int PACKETMODE_MULTICAST = 2;
@@ -17,8 +17,14 @@ public class Packet implements Serializable {
 
     int mode;
 
-    Packet(){}
-    public Packet(int sendMode){
+    protected Packet(){}
+    protected Packet(int sendMode){
         mode = sendMode;
     }
+    protected Packet(Packet pack){ this.mode = pack.mode; }
+
+    protected void populate(int md){ mode = md; }
+
+    @Override
+    public abstract Object clone();
 }

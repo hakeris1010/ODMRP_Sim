@@ -58,14 +58,34 @@ public class ODMRP_Proto extends Routing {
     /**
      * Base ODMRP Routing Data Packet
      */
-    public static class ODMRPPacket extends Packet{
+    public static abstract class ODMRPPacket extends Packet{
         byte type;
         String sourceAddr;
         String multicastGroupIP;
         String previousHopIP;
         int sequenceNumber;
 
+        protected ODMRPPacket(){}
+        protected ODMRPPacket(int mode, byte typ, String src, String multigr, String prevHop, int seqNum){
+            this.populate(mode, typ, src, multigr, prevHop, seqNum);
+        }
+        protected ODMRPPacket(ODMRPPacket pack){
+            this.populate(pack.mode, pack.type, pack.sourceAddr, pack.multicastGroupIP, pack.previousHopIP, pack.sequenceNumber);
+        }
+
+        void populate(int mode, byte typ, String src, String multigr, String prevHop, int seqNum){
+            super.populate(mode);
+            this.type = typ;
+            this.sourceAddr = src;
+            this.multicastGroupIP = multigr;
+            this.previousHopIP = prevHop;
+            this.sequenceNumber = seqNum;
+        }
+
         { mode = Packet.PACKETMODE_BROADCAST; }
+
+        @Override
+        public abstract Object clone();
 
         @Override
         public String toString(){
@@ -88,6 +108,22 @@ public class ODMRP_Proto extends Routing {
 
         { type = JOINQUERY_TYPE; }
 
+        public JoinQueryPacket(){}
+        public JoinQueryPacket(JoinQueryPacket pack){
+            super(pack);
+            this.timeToLive = pack.timeToLive;
+            this.hopCount = pack.hopCount;
+            this.prevHopX = pack.prevHopX; this.prevHopY = pack.prevHopY;
+            this.prevHopSpeed = pack.prevHopSpeed; this.prevHopDirection = pack.prevHopDirection;
+            this.minExpTime = pack.minExpTime;
+            this.payload = pack.payload!=null ? Arrays.copyOf(pack.payload, pack.payload.length) : null;
+        }
+
+        @Override
+        public Object clone(){
+            return new JoinQueryPacket(this);
+        }
+
         @Override
         public String toString(){
             return "JoinQuery: \n"+super.toString()+"\n ttl: "+(int)timeToLive+", hops: "+(int)hopCount+"\n";
@@ -107,14 +143,35 @@ public class ODMRP_Proto extends Routing {
                 senderIP = e.destinationAddress;
                 nextHopIP = e.nextHopAddress;
             }
+            SenderNextHop(SenderNextHop s){
+                senderIP = s.senderIP;
+                nextHopIP = s.nextHopIP;
+                routeExpirationTime = s.routeExpirationTime;
+            }
         }
 
         byte count;
         boolean ackReq, forwardGroup;
 
-        ArrayList<SenderNextHop> senderData = new ArrayList<>();
+        final ArrayList<SenderNextHop> senderData = new ArrayList<>();
 
         { type = JOINREPLY_TYPE; }
+
+        public JoinReplyPacket(){ }
+        public JoinReplyPacket(JoinReplyPacket pack){
+            super(pack);
+            this.count = pack.count;
+            this.ackReq = pack.ackReq;
+            this.forwardGroup = pack.forwardGroup;
+            for(SenderNextHop s : pack.senderData){
+                this.senderData.add(new SenderNextHop(s));
+            }
+        }
+
+        @Override
+        public Object clone(){
+            return new JoinReplyPacket(this);
+        }
 
         @Override
         public String toString(){
