@@ -18,9 +18,12 @@ public class Network {
     private final Thread scheduleThread;
     private AtomicLong refreshTime = new AtomicLong(0);
     private AtomicBoolean endRequest = new AtomicBoolean(false);
+
     private AtomicLong refreshCount = new AtomicLong(0);
+    private AtomicLong successProcCount = new AtomicLong(0);
 
     private final static long MAX_REFRESH = 2;
+    private final static long MAX_SUCCESSFULL_PROCESSINGS = 9;
 
     {
         // The Schedule thread. Runs all nodes, and schedules updates.
@@ -30,7 +33,7 @@ public class Network {
                 // Call nodes to check their Times Until Refresh, and add themselves into the activeNodes
                 // queue if they need refresh now.
                 for(int i = 0; i < netNodes.size() && !endRequest.get(); i++){ // Iterate like this for synchronization.
-                    long tm = netNodes.get(i).checkRefreshTime();
+                    long tm = netNodes.get(i).checkIfProcessingNeeded();
                     if(tm > System.currentTimeMillis()+1 && tm < refreshTime.get()) {
                         refreshTime.set(tm);
                     }
@@ -40,7 +43,8 @@ public class Network {
 
                 // Now process all active nodes.
                 while(!activeNodes.isEmpty() && !endRequest.get()) {
-                    activeNodes.poll().process();
+                    if(activeNodes.poll().process())
+                        successProcCount.incrementAndGet();
                 }
                 // No active nodes left - wait until next refresh.
                 if(!endRequest.get()) {
@@ -56,7 +60,7 @@ public class Network {
                     }
                 }
 
-                // DEBUG: If refreshCount > 10, quit.
+                // DEBUG:
                 if(refreshCount.get() >= MAX_REFRESH){
                     endRequest.set(true);
                     synchronized (this){
@@ -96,9 +100,9 @@ public class Network {
 
         scheduleThread.start();
 
-        // Wait 5000 ms, and stop.
-        /*try {
-            Thread.sleep(5000);
+        // Wait X ms, and stop.
+        try {
+            Thread.sleep(900);
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
@@ -106,16 +110,16 @@ public class Network {
         endRequest.set(true);
         synchronized (this){
             this.notify();
-        }*/
+        }
 
         //Wait until MAX_REFRESH refreshes happened.
-        try {
+        /*try {
             synchronized (this) {
                 this.wait();
             }
         } catch (InterruptedException e) {
             e.printStackTrace();
-        }
+        }*/
 
         // At the end of 100 millisecond Join Query propagation, check the Routing Tables.
         System.out.println("\n===============================\nPropagation End!\nRouting tables:\n");

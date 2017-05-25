@@ -48,7 +48,7 @@ public class Routing {
         if(e!=null && e.equals(entry)){
             // If equal entry found, just update the cost (because comparison is done by nextHop and dest.
             e.cost = entry.cost;
-        } else {
+        } else if(e==null || !e.destinationAddress.equals( entry.destinationAddress )) {
             routingTable.add(entry);
         }
     }

@@ -202,7 +202,7 @@ public class Node implements Comparable {
     public void connectNode(Node node){
         if(neighbors.add(node)) {
             node.connectNode(this);
-            System.out.println("["+this.ipAddress+"] connected with ["+node.ipAddress+"]");
+            Logger.logfn("["+this.ipAddress+"] connected with ["+node.ipAddress+"]");
         }
     }
 
@@ -211,11 +211,11 @@ public class Node implements Comparable {
      * Used by Schedule Thread to determine active nodes based on refresh needed.
      * @return time in millis when refresh will be needed.
      */
-    long checkRefreshTime(){
-        long time = (odmrp.getLastRouteRefresh() + ODMRP_Proto.DEFAULT_ROUTE_REFRESH) - System.currentTimeMillis();
-        if(time <= 0)
+    long checkIfProcessingNeeded(){
+        long time = odmrp.getLastRouteRefresh() + ODMRP_Proto.DEFAULT_ROUTE_REFRESH;
+        if(time < System.currentTimeMillis() || !pendingReceivePackets.isEmpty() || !pendingSendPackets.isEmpty() )
             activeNodes.get().add(this);
-        return odmrp.getLastRouteRefresh() + ODMRP_Proto.DEFAULT_ROUTE_REFRESH;
+        return time;
     }
 
     /**
@@ -240,149 +240,159 @@ public class Node implements Comparable {
      *  @return true, if active operation was processed, false if no operation was processed.
      */
     public boolean process(){
-        System.out.println("\n["+ipAddress+"]: Processing.");
+        Logger.logfn("\n["+ipAddress+"]: Processing.");
+        Packet recPack = null;
+        IPPacket sendPack = null;
 
         // Firstly, check if we gotta send Join Queries, by analyzing timers and if there
         // was a query specified on last iteration.
         if(joinQueryNext != null || odmrp.isRouteRefreshNeeded()){
-            System.out.println("Broadcasting Join Query!");
-
             if(joinQueryNext == null){ // Timer approached -> broadcast JQ with our Multicast Source.
                 joinQueryNext =  prepareJoinQuery(multicastSourceAddress);
             }
             // Add to msg.cache.
             odmrp.addMessageCacheEntry(new ODMRP_Proto.MessageCacheEntry(joinQueryNext.sourceAddr, joinQueryNext.sequenceNumber));
 
-            broadcastPacket(joinQueryNext);
+            Logger.logfn("Broadcasting Join Query! "+ joinQueryNext);
+
+            broadcastPacket(joinQueryNext, null);
 
             // At the end, reset Route Refresh timer, and set joinQueryNext to null.
             odmrp.resetLastRouteRefresh();
             joinQueryNext = null;
-            // Return true, indicating that we successfully completed an operation.
-            return true;
         }
+        else {
+            // At this moment, when no high-priority ODMRP queries are pending, we analyze pending send/receive packets.
 
-        // At this moment, when no high-priority ODMRP queries are pending, we analyze pending send/receive packets.
-        Packet recPack = null;
-        IPPacket sendPack = null;
-        boolean gottaSend = !pendingSendPackets.isEmpty() && (pendingReceivePackets.isEmpty() || sendReceiveModeToggle);
+            boolean gottaSend = !pendingSendPackets.isEmpty() && (pendingReceivePackets.isEmpty() || sendReceiveModeToggle);
 
-        // Send IP packets (The packets this node originates and sends to the network).
-        // Notice that ONLY IP PACKETS can be added to the PendingSendPacks Queue.
-        if(gottaSend){
-            sendPack = pendingSendPackets.poll();
-            System.out.println("Sending packet!"+sendPack);
+            // Send IP packets (The packets this node originates and sends to the network).
+            // Notice that ONLY IP PACKETS can be added to the PendingSendPacks Queue.
+            //if (gottaSend) {
+            if(!pendingSendPackets.isEmpty()) {
+                sendPack = pendingSendPackets.poll();
+                Logger.logfn("Sending packet!" + sendPack);
 
-            // Check the sendPacket mode. If BroadCast or MultiCast, broadcast.
-            if(sendPack.mode == Packet.PACKETMODE_MULTICAST || sendPack.mode == Packet.PACKETMODE_BROADCAST ) {
-                broadcastPacket(sendPack);
-            }
-            // For unicasted sendPackets, route according to routing table.
-            else if(sendPack.mode == Packet.PACKETMODE_UNICAST) {
-                // Firstly check if the route for this sendPacket is unknown, but already being searched for.
-                if (!routeRequestCache.contains(sendPack.destAddr)) {
-                    // If no successful route found, we need to repair our routing table by broadcasting a JQ.
-                    if (!routePacket(sendPack)) {
-                        // Put the UnSent sendPacket at the end of the Queue for resending when route is known,
-                        // and add the destination to routes currently being requested. Request a route on next iteration
-                        // by a Join Query. Note that on Multicast Group field we specify the Destination IP of the sendPacket,
-                        // so the node with that IP will send back a Join Reply.
+                // Check the sendPacket mode. If BroadCast or MultiCast, broadcast.
+                if (sendPack.mode == Packet.PACKETMODE_MULTICAST || sendPack.mode == Packet.PACKETMODE_BROADCAST) {
+                    broadcastPacket(sendPack, null);
+                }
+                // For unicasted sendPackets, route according to routing table.
+                else if (sendPack.mode == Packet.PACKETMODE_UNICAST) {
+                    // Firstly check if the route for this sendPacket is unknown, but already being searched for.
+                    if (!routeRequestCache.contains(sendPack.destAddr)) {
+                        // If no successful route found, we need to repair our routing table by broadcasting a JQ.
+                        if (!routePacket(sendPack)) {
+                            // Put the UnSent sendPacket at the end of the Queue for resending when route is known,
+                            // and add the destination to routes currently being requested. Request a route on next iteration
+                            // by a Join Query. Note that on Multicast Group field we specify the Destination IP of the sendPacket,
+                            // so the node with that IP will send back a Join Reply.
+                            Logger.logfn("No valid route found for packet!");
+                            //pendingSendPackets.offer(sendPack);
+                            //routeRequestCache.add(sendPack.destAddr);
+                            joinQueryNext = prepareJoinQuery(sendPack.destAddr);
+                        }
+                    } else { // If sendPacket's route is being searched for, we can move to Receive Packet queue.
                         pendingSendPackets.offer(sendPack);
-                        routeRequestCache.add(sendPack.destAddr);
-                        joinQueryNext = prepareJoinQuery(sendPack.destAddr);
+                        gottaSend = false;
                     }
-                } else { // If sendPacket's route is being searched for, we can move to Receive Packet queue.
-                    pendingSendPackets.offer(sendPack);
-                    gottaSend = false;
                 }
             }
-        }
-        // Check receive packets, if there are pending and no sending were done.
-        if(!pendingReceivePackets.isEmpty() && !gottaSend){
-            recPack = pendingReceivePackets.peek();
+            // Check receive packets, if there are pending and no sending were done.
+            if (!pendingReceivePackets.isEmpty()) {
+                recPack = pendingReceivePackets.poll();
 
-            // Check the type of recPacket got: Join Query, Join Reply, IP Data.
-            if(recPack instanceof ODMRP_Proto.JoinQueryPacket) {
-                // Check if it's in message cache. If not, broadcast.
-                ODMRP_Proto.JoinQueryPacket odp = (ODMRP_Proto.JoinQueryPacket) recPack;
-                System.out.print("Got ODMRP Join Query Packet: "+odp);
+                // Check the type of recPacket got: Join Query, Join Reply, IP Data.
+                if (recPack instanceof ODMRP_Proto.JoinQueryPacket) {
+                    ODMRP_Proto.JoinQueryPacket odp = (ODMRP_Proto.JoinQueryPacket) recPack;
+                    Logger.logfn("Got ODMRP Join Query Packet! SeqNum: "+odp.sequenceNumber);
 
-                if (!odmrp.isEntryInMessageCache(new ODMRP_Proto.MessageCacheEntry(odp.sourceAddr, odp.sequenceNumber))) {
-                    // Add a message entry, and update routes.
-                    odmrp.addMessageCacheEntry(new ODMRP_Proto.MessageCacheEntry(odp.sourceAddr, odp.sequenceNumber));
+                    // Check if it's in message cache. If not, broadcast.
+                    if (!odmrp.isEntryInMessageCache(new ODMRP_Proto.MessageCacheEntry(odp.sourceAddr, odp.sequenceNumber))) {
+                        Logger.logf("Packet is Not in Message Cache: " + odp);
+
+                        // Add a message entry, and update routes.
+                        odmrp.addMessageCacheEntry(new ODMRP_Proto.MessageCacheEntry(odp.sourceAddr, odp.sequenceNumber));
+                        odmrp.addRoutingEntry(new Routing.RoutingEntry(odp.sourceAddr, odp.previousHopIP));
+
+                        // If we're part of Query's Multicast Group, make a Join Reply to the Source of the
+                        // Multicast Group of this query, and broadcast it.
+                        if (multicastGroups.contains(odp.multicastGroupIP))
+                            broadcastPacket(prepareJoinReply(odp.multicastGroupIP, Arrays.asList(odp.sourceAddr)), null);
+
+                        // Update Hop Count / TTL
+                        odp.hopCount++;
+                        if (odp.timeToLive > 1) { // If time to live hasn't expired, broadcast.
+                            odp.timeToLive--;
+                            String lastHop = odp.previousHopIP;
+                            odp.previousHopIP = this.ipAddress;
+
+                            Logger.logfn("Broadcasting an updated JQ packet! "+odp);
+                            broadcastPacket(odp, Arrays.asList(lastHop));
+                        }
+                    } else
+                        recPack = null;
+                }
+                // ODMRP Join Reply
+                else if (recPack instanceof ODMRP_Proto.JoinReplyPacket) {
+                    ODMRP_Proto.JoinReplyPacket odp = (ODMRP_Proto.JoinReplyPacket) recPack;
+                    Logger.logf("Got ODMRP Join Reply Packet: " + odp);
+
+                    // Update routes.
                     odmrp.addRoutingEntry(new Routing.RoutingEntry(odp.sourceAddr, odp.previousHopIP));
 
-                    // If we're part of Query's Multicast Group, make a Join Reply to the Source of the
-                    // Multicast Group of this query, and broadcast it.
-                    if (multicastGroups.contains(odp.multicastGroupIP))
-                        broadcastPacket( prepareJoinReply(odp.multicastGroupIP, Arrays.asList(odp.sourceAddr)) );
+                    // Check the entries of Next Hops that match current node IP.
+                    // Remove all entries which are not for us or reached the final destination.
+                    Iterator<ODMRP_Proto.JoinReplyPacket.SenderNextHop> i = odp.senderData.iterator();
+                    while (i.hasNext()) {
+                        ODMRP_Proto.JoinReplyPacket.SenderNextHop cur = i.next();
+                        if (!cur.nextHopIP.equals(this.ipAddress) || cur.senderIP.equals(this.ipAddress))
+                            i.remove(); // Remove the element I is pointing to now.
 
-                    // Update Hop Count / TTL
-                    odp.hopCount++;
-                    if (odp.timeToLive > 1) { // If time to live hasn't expired, broadcast.
-                        odp.timeToLive--;
+                        cur.nextHopIP = odmrp.getRouteForDestination(cur.senderIP).nextHopAddress;
+                        if (cur.nextHopIP == null) // No route found
+                            i.remove();
+                    }
+                    odp.count = (byte) (odp.senderData.size());
+                    // If no entries of Next Hops match current node's IP, do nothing.
+                    // If there are valid entries left, broadcast the modified join reply.
+                    if (odp.senderData.size() > 0) {
+                        Logger.logfn("We are part of Multicast Forward Group! Broadcasting the updated Join Reply.");
+                        // Update the Forwarding Group, and broadcast.
+                        odmrp.addGroupToForwardingTable(odp.multicastGroupIP);
+                        String lastHop = odp.previousHopIP;
                         odp.previousHopIP = this.ipAddress;
-
-                        System.out.println("Broadcasting an updated JQ packet!");
-                        broadcastPacket(odp);
+                        broadcastPacket(odp, Arrays.asList(lastHop));
                     }
                 }
-            }
-            // ODMRP Join Reply
-            else if(recPack instanceof ODMRP_Proto.JoinReplyPacket){
-                ODMRP_Proto.JoinReplyPacket odp = (ODMRP_Proto.JoinReplyPacket)recPack;
-                System.out.print("Got ODMRP Join Reply Packet: "+odp);
+                // IP Packet
+                else if (recPack instanceof IPPacket) {
+                    IPPacket pck = (IPPacket) recPack;
+                    Logger.logf("Got IP Packet: " + pck);
 
-                // Update routes.
-                odmrp.addRoutingEntry(new Routing.RoutingEntry(odp.sourceAddr, odp.previousHopIP));
+                    if (pck.destAddr.equals(this.ipAddress)) { // Check if this recPacket is meant for us.
+                        passToTransportLayer(pck.dataPayload);
+                    } else { // If packet is not meant for us, route it.
+                        if (pck.timeToLive > 1) {
+                            pck.timeToLive--;
+                            pck.hopsTraveled++;
 
-                // Check the entries of Next Hops that match current node IP.
-                // Remove all entries which are not for us or reached the final destination.
-                Iterator<ODMRP_Proto.JoinReplyPacket.SenderNextHop> i = odp.senderData.iterator();
-                while(i.hasNext()){
-                    ODMRP_Proto.JoinReplyPacket.SenderNextHop cur = i.next();
-                    if(!cur.nextHopIP.equals( this.ipAddress ) || cur.senderIP.equals(this.ipAddress))
-                        i.remove(); // Remove the element I is pointing to now.
-
-                    cur.nextHopIP = odmrp.getRouteForDestination(cur.senderIP).nextHopAddress;
-                    if(cur.nextHopIP==null) // No route found
-                        i.remove();
-                }
-                odp.count = (byte)(odp.senderData.size());
-                // If no entries of Next Hops match current node's IP, do nothing.
-                // If there are valid entries left, broadcast the modified join reply.
-                if(odp.senderData.size() > 0){
-                    System.out.println("We are part of Multicast Forward Group! Broadcasting the updated Join Reply.");
-                    // Update the Forwarding Group, and broadcast.
-                    odmrp.addGroupToForwardingTable(odp.multicastGroupIP);
-                    broadcastPacket(odp);
-                }
-            }
-            // IP Packet
-            else if(recPack instanceof IPPacket){
-                IPPacket pck = (IPPacket)recPack;
-                System.out.print("Got IP Packet: "+pck);
-
-                if(pck.destAddr.equals(this.ipAddress)){ // Check if this recPacket is meant for us.
-                    passToTransportLayer(pck.dataPayload);
-                }
-                else { // If packet is not meant for us, route it.
-                    if(pck.timeToLive > 1) {
-                        pck.timeToLive--;
-                        pck.hopsTraveled++;
-
-                        // If packet is Unicast, route it. If no route is found, discard packet.
-                        if (pck.mode == Packet.PACKETMODE_UNICAST && !routePacket(pck))
-                            System.out.println("Packet can't be routed! No valid route found!");
-                        else if (pck.mode == Packet.PACKETMODE_BROADCAST || (pck.mode == Packet.PACKETMODE_MULTICAST &&
-                                odmrp.getGroupEntryByID(pck.destAddr, true) != null)) {
-                            System.out.println("Packet is broadcast, or FG_FLAG for the Multicast group is set. Broadcasting packet.");
-                            broadcastPacket(pck);
+                            // If packet is Unicast, route it. If no route is found, discard packet.
+                            if (pck.mode == Packet.PACKETMODE_UNICAST && !routePacket(pck))
+                                Logger.logfn("Packet can't be routed! No valid route found!");
+                            else if (pck.mode == Packet.PACKETMODE_BROADCAST || (pck.mode == Packet.PACKETMODE_MULTICAST &&
+                                    odmrp.getGroupEntryByID(pck.destAddr, true) != null)) {
+                                Logger.logfn("Packet is broadcast, or FG_FLAG for the Multicast group is set. Broadcasting packet.");
+                                broadcastPacket(pck, null);
+                            }
                         }
                     }
                 }
             }
         }
+
+        if(!pendingSendPackets.isEmpty() || !pendingReceivePackets.isEmpty())
+            activeNodes.get().add(this);
 
         sendReceiveModeToggle = !sendReceiveModeToggle; // Switch between receive/send modes.
         return sendPack!=null || recPack!=null;
@@ -412,6 +422,10 @@ public class Node implements Comparable {
         if(pendingReceivePackets.size() >= PENDING_PACKET_QUESIZE)
             pendingReceivePackets.poll();
         pendingReceivePackets.offer(pack);
+
+        Logger.logfn("["+this.ipAddress+"]: Accepted packet! Type: "+
+                (pack instanceof ODMRP_Proto.JoinQueryPacket ? "JoinQuery" :
+                (pack instanceof ODMRP_Proto.JoinReplyPacket ? "JoinReply" : "IPPacket") ) );
 
         // Push this node to the Queue of Nodes In Need Of Processing.
         activeNodes.get().offer(this);
@@ -510,11 +524,13 @@ public class Node implements Comparable {
      * @param pack - the Packet to broadcast.
      * @return true, if at least one node accepted the packet, false otherwise.
      */
-    private boolean broadcastPacket(Packet pack){
+    private boolean broadcastPacket(Packet pack, List<String> except){
         boolean accepted = false;
         for(Node n : neighbors){
-            if(n.acceptPacket(pack))
-                accepted = true;
+            if((except!=null && !except.contains(n.ipAddress)) || except==null){
+                if(n.acceptPacket(pack))
+                    accepted = true;
+            }
         }
         return accepted;
     }
@@ -540,7 +556,7 @@ public class Node implements Comparable {
      * @param data - packet data.
      */
     void passToTransportLayer(byte[] data){
-        System.out.println("\n----------------------------\nGot Packet!\nData: "+
+        Logger.logfn("\n----------------------------\nGot Packet!\nData: "+
                 Arrays.toString(data)+"\n---------------------------");
     }
 }
