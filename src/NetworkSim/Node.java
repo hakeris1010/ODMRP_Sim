@@ -1,9 +1,5 @@
 package NetworkSim;
 
-import com.sun.istack.internal.NotNull;
-import com.sun.org.apache.regexp.internal.RE;
-import com.sun.xml.internal.bind.v2.runtime.reflect.Lister;
-
 import java.util.*;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.atomic.AtomicReference;
@@ -109,6 +105,7 @@ public class Node implements Comparable {
 
     // The addresses of multicast groups this node is part of.
     private final List<String> multicastGroups = new ArrayList<>();
+    private final Set<String> multicastReceivers = new TreeSet<>();
 
     // The nodes this node is directly connected to.
     private final Set<Node> neighbors = Collections.synchronizedSortedSet(new TreeSet<>());
@@ -118,7 +115,7 @@ public class Node implements Comparable {
 
     // Pending packet queues
     private final Queue<Packet> pendingReceivePackets = new LinkedList<>();
-    private final Queue<IPPacket> pendingSendPackets = new LinkedList<>();
+    private final Queue<Packet> pendingSendPackets = new LinkedList<>();
 
     // A set containing routes we are requesting at the moment, it helps to avoid loops.
     private final SortedSet<String> routeRequestCache = new TreeSet<>();
@@ -159,17 +156,7 @@ public class Node implements Comparable {
      */
     @Override
     public String toString(){
-        StringBuilder ret = new StringBuilder();
-        ret.append("Node: ").append(ipAddress).append("\n Multicast source address: ").append(multicastSourceAddress).
-            append("\n MulticastGroups: ");
-        for(String gr : multicastGroups){
-            ret.append(gr).append(" , ");
-        }
-        ret.append("\n Neighbors:\n");
-        for(Node n : neighbors){
-            ret.append("  ").append(n.ipAddress);
-        }
-        return ret.append("\n").toString();
+        return customToString(true, true, false, false, false);
     }
 
     @Override
@@ -261,8 +248,7 @@ public class Node implements Comparable {
      */
     public boolean process(){
         Logger.logfn("\n["+ipAddress+"]: Processing.");
-        Packet recPack = null;
-        IPPacket sendPack = null;
+        Packet recPack = null, sentPack = null;
 
         // Firstly, check if we gotta send Join Queries, by analyzing timers and if there
         // was a query specified on last iteration.
@@ -289,16 +275,16 @@ public class Node implements Comparable {
             // Send IP packets (The packets this node originates and sends to the network).
             // Notice that ONLY IP PACKETS can be added to the PendingSendPacks Queue.
             //if (gottaSend) {
-            if(!pendingSendPackets.isEmpty()) {
-                sendPack = pendingSendPackets.poll();
+            if(!pendingSendPackets.isEmpty() && (sentPack = pendingSendPackets.poll()) instanceof IPPacket ) {
+                IPPacket sendPack = (IPPacket)sentPack;
                 Logger.logfn("Sending packet!" + sendPack);
 
                 // Check the sendPacket mode. If BroadCast or MultiCast, broadcast.
-                if (sendPack.mode == Packet.PACKETMODE_MULTICAST || sendPack.mode == Packet.PACKETMODE_BROADCAST) {
+                if (sendPack.mode == Packet.CastMode.MULTICAST || sendPack.mode == Packet.CastMode.BROADCAST) {
                     broadcastPacket(sendPack, null);
                 }
                 // For unicasted sendPackets, route according to routing table.
-                else if (sendPack.mode == Packet.PACKETMODE_UNICAST) {
+                else if (sendPack.mode == Packet.CastMode.UNICAST) {
                     // Firstly check if the route for this sendPacket is unknown, but already being searched for.
                     if (!routeRequestCache.contains(sendPack.destAddr)) {
                         // If no successful route found, we need to repair our routing table by broadcasting a JQ.
@@ -337,8 +323,10 @@ public class Node implements Comparable {
 
                         // If we're part of Query's Multicast Group, make a Join Reply to the Source of the
                         // Multicast Group of this query, and broadcast it.
-                        if (multicastGroups.contains(odp.multicastGroupIP))
+                        if (multicastGroups.contains(odp.multicastGroupIP)) {
+                            Logger.logfn("We got a Query for a Group We Are Part Of! Broadcasting Join Reply...");
                             broadcastPacket(prepareJoinReply(odp.multicastGroupIP, Arrays.asList(odp.sourceAddr)), null);
+                        }
 
                         // Update Hop Count / TTL
                         odp.hopCount++;
@@ -366,8 +354,15 @@ public class Node implements Comparable {
                     Iterator<ODMRP_Proto.JoinReplyPacket.SenderNextHop> i = odp.senderData.iterator();
                     while (i.hasNext()) {
                         ODMRP_Proto.JoinReplyPacket.SenderNextHop cur = i.next();
-                        if (!cur.nextHopIP.equals(this.ipAddress) || cur.senderIP.equals(this.ipAddress))
+                        if (!cur.nextHopIP.equals(this.ipAddress) || cur.senderIP.equals(this.ipAddress)) {
+                            if(cur.senderIP.equals(this.ipAddress)){
+                                Logger.logfn("We got Join Reply FOR US! Adding the source to the Receivers List...");
+                                multicastReceivers.add(odp.sourceAddr);
+                            }
+
                             i.remove(); // Remove the element I is pointing to now.
+                            continue;
+                        }
 
                         cur.nextHopIP = odmrp.getRouteForDestination(cur.senderIP).nextHopAddress;
                         if (cur.nextHopIP == null) // No route found
@@ -390,17 +385,17 @@ public class Node implements Comparable {
                     IPPacket pck = (IPPacket) recPack;
                     Logger.logf("Got IP Packet: " + pck);
 
-                    if (pck.destAddr.equals(this.ipAddress)) { // Check if this recPacket is meant for us.
-                        passToTransportLayer(pck.dataPayload);
+                    if (pck.destAddr.equals(this.ipAddress) || multicastGroups.contains(pck.destAddr)) { // Check if this recPacket is meant for us.
+                        passToTransportLayer(pck);
                     } else { // If packet is not meant for us, route it.
                         if (pck.timeToLive > 1) {
-                            pck.timeToLive--;
-                            pck.hopsTraveled++;
+                            (pck.timeToLive)--;
+                            (pck.hopsTraveled)+=1;
 
                             // If packet is Unicast, route it. If no route is found, discard packet.
-                            if (pck.mode == Packet.PACKETMODE_UNICAST && !routePacket(pck))
+                            if (pck.mode == Packet.CastMode.UNICAST && !routePacket(pck))
                                 Logger.logfn("Packet can't be routed! No valid route found!");
-                            else if (pck.mode == Packet.PACKETMODE_BROADCAST || (pck.mode == Packet.PACKETMODE_MULTICAST &&
+                            else if (pck.mode == Packet.CastMode.BROADCAST || (pck.mode == Packet.CastMode.MULTICAST &&
                                     odmrp.getGroupEntryByID(pck.destAddr, true) != null)) {
                                 Logger.logfn("Packet is broadcast, or FG_FLAG for the Multicast group is set. Broadcasting packet.");
                                 broadcastPacket(pck, null);
@@ -415,16 +410,42 @@ public class Node implements Comparable {
             activeNodes.get().add(this);
 
         sendReceiveModeToggle = !sendReceiveModeToggle; // Switch between receive/send modes.
-        return sendPack!=null || recPack!=null;
+        return sentPack!=null || recPack!=null;
     }
 
-    public void sendPacket(IPPacket pack){
-        if(pendingSendPackets.size() >= PENDING_PACKET_QUESIZE)
-            pendingSendPackets.poll();
-        pendingSendPackets.offer(pack);
+
+    private boolean putPacketToQueue(Packet pack, Queue<Packet> pendingQue, String msg, boolean putToActiveNodes){
+        if(this.down) // If Node Down flag set, don't perform anything.
+            return false;
+        // Add packet to the pending packet queue.
+        if(pendingQue.size() >= PENDING_PACKET_QUESIZE)
+            pendingQue.poll();
+
+        // Add a New Copy of the packet. We must make a copy so the modified version while processing
+        // won't be the same instance other nodes got.
+        pendingQue.offer( (Packet) ( pack.clone() ) );
+
+        Logger.logfn("["+this.ipAddress+"]: "+msg+" Type: "+
+                (pack instanceof ODMRP_Proto.JoinQueryPacket ? "JoinQuery" :
+                (pack instanceof ODMRP_Proto.JoinReplyPacket ? "JoinReply" :
+                (pack instanceof IPPacket ? "IPPacket" : "UnKnown") ) ) );
 
         // Push this node to the Queue of Nodes In Need Of Processing.
         activeNodes.get().offer(this);
+
+        return true;
+    }
+
+    /**
+     * Schedules a packet to be sent from this node over the network.
+     * @param pack - a packet to send.
+     */
+    public boolean sendPacket(IPPacket pack){
+        return putPacketToQueue(pack, pendingSendPackets, "Sending packet!", true);
+    }
+
+    public void originateIPPacket(Packet.CastMode castMode, String dest, String payload){
+        sendPacket(new IPPacket(castMode, this.ipAddress, dest, ODMRP_Proto.DEFAULT_TTL, payload));
     }
 
     /** =====================================================================
@@ -436,24 +457,7 @@ public class Node implements Comparable {
      * @param pack - a packet.
      */
     private boolean acceptPacket(Packet pack){
-        if(this.down) // If Node Down flag set, don't perform anything.
-            return false;
-        // Add packet to the pending packet queue.
-        if(pendingReceivePackets.size() >= PENDING_PACKET_QUESIZE)
-            pendingReceivePackets.poll();
-
-        // Add a New Copy of the packet. We must make a copy so the modified version while processing
-        // won't be the same instance other nodes got.
-        pendingReceivePackets.offer( (Packet)(pack.clone()) );
-
-        Logger.logfn("["+this.ipAddress+"]: Accepted packet! Type: "+
-                (pack instanceof ODMRP_Proto.JoinQueryPacket ? "JoinQuery" :
-                (pack instanceof ODMRP_Proto.JoinReplyPacket ? "JoinReply" : "IPPacket") ) );
-
-        // Push this node to the Queue of Nodes In Need Of Processing.
-        activeNodes.get().offer(this);
-
-        return true;
+        return putPacketToQueue(pack, pendingReceivePackets, "Accepted packet!", true);
     }
 
     /** - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -532,8 +536,8 @@ public class Node implements Comparable {
             if(rt == null)
                 break; // Null means no possible routes.
             Node neigh = getNeighborByIP(rt.nextHopAddress);
-            // If packet successfully sent, break loop.
-            if( neigh != null && neigh.acceptPacket(pack) )
+            // If packet successfully sent, break loop. Send a Clone of the packet.
+            if( neigh != null && neigh.acceptPacket( pack ) )
                 break;
             else // If packet send failed -> host is down, or neighbor doesn't exist, so route is invalid --> delete route.
                 odmrp.removeRoutingEntry(rt);
@@ -561,25 +565,62 @@ public class Node implements Comparable {
     /**
      * @return IP address type - multicast, unicast, or broadcast.
      */
-    private int getAddressType(String ip){
+    private Packet.CastMode getAddressType(String ip){
         if(ip.contains(":")) { // IPv6
-            return Packet.PACKETMODE_NOADDR; // Not yet implemented.
+            return Packet.CastMode.NOADDR; // Not yet implemented.
         }
         // IPv4
         else if(ip.matches(Packet.IPV4_MULTICAST_REGEX))
-            return Packet.PACKETMODE_MULTICAST;
+            return Packet.CastMode.MULTICAST;
         else if(ip.equals(Packet.IPV4_BROADCAST_REGEX))
-            return Packet.PACKETMODE_BROADCAST;
+            return Packet.CastMode.BROADCAST;
 
-        return Packet.PACKETMODE_NOADDR;
+        return Packet.CastMode.NOADDR;
     }
 
     /**
      * Pass packet data to Transport Layer (4) from Network Layer (3).
-     * @param data - packet data.
+     * @param pack - packet data.
      */
-    void passToTransportLayer(byte[] data){
-        Logger.logfn("\n----------------------------\nGot Packet!\nData: "+
-                Arrays.toString(data)+"\n---------------------------");
+    void passToTransportLayer(IPPacket pack){
+        System.out.println("\n----------------------------\nGot Packet: "+pack+"Data: "+
+                pack.dataPayload+"\n---------------------------\n");
+    }
+
+    /**
+     * Prints representation of this object by flags specified.
+     * @return string representation.
+     */
+    public String customToString(boolean neighbors, boolean multicastGroups, boolean multicastReceivers,
+                                 boolean routingTable, boolean forwardingTable){
+        StringBuilder ret = new StringBuilder();
+        ret.append("Node: [").append(ipAddress).append("]: Multicast source address: ").append(multicastSourceAddress);
+
+        if(multicastGroups) {
+            ret.append("\n MulticastGroups: ");
+            for (String gr : this.multicastGroups) {
+                ret.append(gr).append(" , ");
+            }
+        }
+        if(multicastReceivers){
+            ret.append("\n MulticastReceivers: ");
+            for (String r : this.multicastReceivers) {
+                ret.append(r).append(" , ");
+            }
+        }
+        if(neighbors) {
+            ret.append("\n Neighbors: ");
+            for (Node n : this.neighbors) {
+                ret.append(n.ipAddress).append(" , ");
+            }
+        }
+        if(routingTable){
+            ret.append("\nRouting Table:\n").append(odmrp.routingTableToString());
+        }
+        if(forwardingTable){
+            ret.append("\nForwarding Table:\n").append(odmrp.forwardingTableToString());
+        }
+
+        return ret.append("\n").toString();
     }
 }

@@ -66,14 +66,14 @@ public class ODMRP_Proto extends Routing {
         int sequenceNumber;
 
         protected ODMRPPacket(){}
-        protected ODMRPPacket(int mode, byte typ, String src, String multigr, String prevHop, int seqNum){
+        protected ODMRPPacket(CastMode mode, byte typ, String src, String multigr, String prevHop, int seqNum){
             this.populate(mode, typ, src, multigr, prevHop, seqNum);
         }
         protected ODMRPPacket(ODMRPPacket pack){
             this.populate(pack.mode, pack.type, pack.sourceAddr, pack.multicastGroupIP, pack.previousHopIP, pack.sequenceNumber);
         }
 
-        void populate(int mode, byte typ, String src, String multigr, String prevHop, int seqNum){
+        void populate(CastMode mode, byte typ, String src, String multigr, String prevHop, int seqNum){
             super.populate(mode);
             this.type = typ;
             this.sourceAddr = src;
@@ -82,7 +82,7 @@ public class ODMRP_Proto extends Routing {
             this.sequenceNumber = seqNum;
         }
 
-        { mode = Packet.PACKETMODE_BROADCAST; }
+        { mode = Packet.CastMode.BROADCAST; }
 
         @Override
         public abstract Object clone();
@@ -192,8 +192,8 @@ public class ODMRP_Proto extends Routing {
     public static final byte DEFAULT_TTL = 32;
 
     // Intervals, in milliseconds.
-    public static final long DEFAULT_ROUTE_REFRESH = 200;
-    public static final long DEFAULT_FORWARDING_TIMEOUT = 800;
+    public static final long DEFAULT_ROUTE_REFRESH = 1000;
+    public static final long DEFAULT_FORWARDING_TIMEOUT = 3000;
 
     /** =============================================================================
      * The state data tables.
@@ -205,7 +205,7 @@ public class ODMRP_Proto extends Routing {
     private final SortedSet<ForwardingGroupTableEntry> forwardingGroupTable = new TreeSet<>();
 
     // Timers
-    private long lastRouteRefresh;
+    private long lastRouteRefresh = 0;
 
     /**
      * API for easily getting required info and modifying the tables.
@@ -232,20 +232,25 @@ public class ODMRP_Proto extends Routing {
         return forwardingGroupTable.remove(e);
     }
     public void addGroupToForwardingTable(String groupAddr){
-
+        ForwardingGroupTableEntry fo = getGroupEntryByID(groupAddr, true);
+        if(fo==null)
+            forwardingGroupTable.add(new ForwardingGroupTableEntry(groupAddr, System.currentTimeMillis()));
+        else
+            fo.lastRefreshedTime = System.currentTimeMillis();
     }
 
     public ForwardingGroupTableEntry getGroupEntryByID(String groupID, boolean deleteIfExpired){
-        ForwardingGroupTableEntry dummy = new ForwardingGroupTableEntry(groupID, 0), en;
-        en = ((TreeSet<ForwardingGroupTableEntry>)forwardingGroupTable).ceiling( dummy );
-        // Delete group entry if timed out.
-        if( en!=null && en.equals(dummy) && deleteIfExpired &&
-            System.currentTimeMillis() - en.lastRefreshedTime > DEFAULT_FORWARDING_TIMEOUT){
-              forwardingGroupTable.remove(en);
-              en = null;
+        if(groupID != null) {
+            ForwardingGroupTableEntry dummy = new ForwardingGroupTableEntry(groupID, 0), en;
+            en = ((TreeSet<ForwardingGroupTableEntry>) forwardingGroupTable).ceiling(dummy);
+            // Delete group entry if timed out.
+            if (en != null && en.equals(dummy)){
+                if( deleteIfExpired && System.currentTimeMillis() - en.lastRefreshedTime > DEFAULT_FORWARDING_TIMEOUT)
+                    forwardingGroupTable.remove(en);
+                else
+                    return en;
+            }
         }
-        if(en!=null && en.equals(dummy))
-            return en;
         return null;
     }
 

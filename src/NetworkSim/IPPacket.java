@@ -6,24 +6,25 @@ public class IPPacket extends Packet {
     byte version = 4;
     String sourceAddr;
     String destAddr;
-    byte timeToLive;
-    byte hopsTraveled;
+    int timeToLive = 32;
+    int hopsTraveled = 0;
 
-    byte[] dataPayload;
+    String dataPayload;
 
-    public IPPacket(int mode, String source, String dest, byte ttl, byte[] payload){
+    public IPPacket(CastMode mode, String source, String dest, int ttl, String payload){
         this.populate(mode, source, dest, ttl, payload);
     }
     public IPPacket(IPPacket pack){
         this.populate(pack.mode, pack.sourceAddr, pack.destAddr, pack.timeToLive, pack.dataPayload);
     }
 
-    private void populate(int mode, String source, String dest, byte ttl, byte[] payload){
+    private void populate(CastMode mode, String source, String dest, int ttl, String payload){
         super.populate(mode);
         sourceAddr = source;
         destAddr = dest;
         timeToLive = ttl;
-        dataPayload =  Arrays.copyOf(payload, payload.length);
+        hopsTraveled = 0;
+        dataPayload = payload;
     }
 
     @Override
@@ -33,6 +34,6 @@ public class IPPacket extends Packet {
 
     @Override
     public String toString(){
-        return "IPPacket:\n src: "+sourceAddr+"\n dst: "+destAddr+"\n ttl: "+(int)timeToLive+", hops: "+(int)hopsTraveled+"\n";
+        return "IPPacket ("+mode+"):\n src: "+sourceAddr+"\n dst: "+destAddr+"\n ttl: "+timeToLive+", hops: "+hopsTraveled+"\n";
     }
 }

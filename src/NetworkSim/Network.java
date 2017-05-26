@@ -49,6 +49,7 @@ public class Network {
                 // No active nodes left - wait until next refresh.
                 if(!endRequest.get()) {
                     synchronized (this) {
+                        Logger.logfn("[ScheduleThread]: entering wait state for time: "+(refreshTime.get() - System.currentTimeMillis()));
                         long refTime = refreshTime.get() - System.currentTimeMillis();
                         if (refTime > 0) {
                             try {
@@ -60,13 +61,14 @@ public class Network {
                     }
                 }
 
+                /*
                 // DEBUG:
                 if(refreshCount.get() >= MAX_REFRESH){
                     endRequest.set(true);
                     synchronized (this){
                         this.notify();
                     }
-                }
+                }*/
             }
         });
     }
@@ -80,11 +82,11 @@ public class Network {
                  \ |
                    D - E
          */
-        Node A = new Node(activeNodes, "192.168.0.101", null, Arrays.asList("224.0.0.2"), null);
-        Node B = new Node(activeNodes, "192.168.0.100", null);
+        Node A = new Node(activeNodes, "192.168.0.101", "224.0.0.2", Arrays.asList("224.0.0.1"), null);
+        Node B = new Node(activeNodes, "192.168.0.100", "224.0.0.1");
         Node C = new Node(activeNodes, "192.168.0.102", null, Arrays.asList("224.0.0.1"), null);
-        Node D = new Node(activeNodes, "192.168.0.103", null, Arrays.asList("224.0.0.1"), null);
-        Node E = new Node(activeNodes, "192.168.0.104", null, Arrays.asList("224.0.0.1"), null);
+        Node D = new Node(activeNodes, "192.168.0.103", null, Arrays.asList("224.0.0.2"), null);
+        Node E = new Node(activeNodes, "192.168.0.104", null);
 
         netNodes.add(A);
         netNodes.add(B);
@@ -109,13 +111,27 @@ public class Network {
 
             scheduleThread.start();
 
-            // Wait X ms, and stop.
+            // Wait X ms, and send packets.
             try {
-                Thread.sleep(2000);
+                Thread.sleep(1000);
             } catch (InterruptedException e) {
                 e.printStackTrace();
             }
 
+            System.out.println("\n= = = = = = = = = = = = = = = = = = = = =\nSENDING IP PACKETS!!!\n");
+            IPPacket pack = new IPPacket(Packet.CastMode.UNICAST, A.getIpAddress(), E.getIpAddress(), 16, "Kawaii nya nya :3");
+            A.sendPacket(pack);
+
+            System.out.println("\n= = = = = = = = = = = = = = = = = = = = =\nSENDING MultiCast IP PACKETS!!!\n");
+            pack = new IPPacket(Packet.CastMode.MULTICAST, A.getIpAddress(), A.getMulticastSourceAddress(), 16, "Kawaii nya nya :3");
+            A.sendPacket(pack);
+
+            // Wait X ms, and stop.
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
             endRequest.set(true);
             synchronized (this){
                 this.notify();
@@ -136,8 +152,8 @@ public class Network {
             // At the end of Packet Scheduler propagation, check the Routing Tables.
             System.out.println("\n===============================\nPropagation End!\nRouting tables:\n");
             for(Node i : netNodes){
-                //System.out.println(i);
-                System.out.println("\n["+i.getIpAddress()+"]: Routing Table:\n"+ i.getRoutingTable() );
+                System.out.println(i.customToString(false, false, true, true, true));
+                //System.out.println("\n["+i.getIpAddress()+"]: Routing Table:\n"+ i.getRoutingTable() );
             }
         }
     }
