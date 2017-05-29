@@ -8,9 +8,11 @@ public class IPPacket extends Packet {
     String destAddr;
     int timeToLive = 32;
     int hopsTraveled = 0;
+    boolean verbose = false;
 
     String dataPayload;
 
+    public IPPacket(){}
     public IPPacket(CastMode mode, String source, String dest, int ttl, String payload){
         this.populate(mode, source, dest, ttl, payload);
     }

@@ -1,9 +1,9 @@
 package NetworkSim;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
+import com.sun.xml.internal.bind.v2.runtime.reflect.Lister;
+
+import java.lang.reflect.Array;
+import java.util.*;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -49,7 +49,7 @@ public class Network {
                 // No active nodes left - wait until next refresh.
                 if(!endRequest.get()) {
                     synchronized (this) {
-                        Logger.logfn("[ScheduleThread]: entering wait state for time: "+(refreshTime.get() - System.currentTimeMillis()));
+                        //Logger.logfn("[ScheduleThread]: entering wait state for time: "+(refreshTime.get() - System.currentTimeMillis()));
                         long refTime = refreshTime.get() - System.currentTimeMillis();
                         if (refTime > 0) {
                             try {
@@ -75,86 +75,228 @@ public class Network {
 
     public Network(){ }
 
+    /**
+     * Adds a node to the current network nodes, and connects with the specified neighbors
+     * @param node - a new node to add to da network.
+     * @param neighbors - neighbor nodes
+     * @return the node just added.
+     */
+    private Node addNetNode(Node node, final List<Node> neighbors){
+        System.out.println("Adding node:"+node);
+        if(neighbors != null) {
+            for (Node n : neighbors) {
+                node.connectNode(n);
+            }
+        }
+        netNodes.add(node);
+        return node;
+    }
+
+    private Node getNodeByIP(String ip){
+        for(int i=0; i<netNodes.size(); i++){
+            if(netNodes.get(i).getIpAddress().equals(ip))
+                return netNodes.get(i);
+        }
+        return null;
+    }
+
+    private Node addNetNode(Node node){
+        System.out.println("Adding node:"+node);
+        netNodes.add(node);
+        return node;
+    }
+
+    /**
+     * starts the Scheduler Thread, and runs UI on current thread.
+     */
     public void startNetwork(){
+        scheduleThread.start();
+        runUserInterface();
+        //startNetworkTest();
+    }
+
+    private void startNetworkTest(){
         // Add nodes to network.
         /* Topology - simple:
            A - B - C
                  \ |
                    D - E
          */
-        Node A = new Node(activeNodes, "192.168.0.101", "224.0.0.2", Arrays.asList("224.0.0.1"), null);
-        Node B = new Node(activeNodes, "192.168.0.100", "224.0.0.1");
-        Node C = new Node(activeNodes, "192.168.0.102", null, Arrays.asList("224.0.0.1"), null);
-        Node D = new Node(activeNodes, "192.168.0.103", null, Arrays.asList("224.0.0.2"), null);
-        Node E = new Node(activeNodes, "192.168.0.104", null);
 
-        netNodes.add(A);
-        netNodes.add(B);
-        netNodes.add(C);
-        netNodes.add(D);
-        netNodes.add(E);
+        // Starting the Scheduler.
+        scheduleThread.start();
 
         try {
-            B.connectNode(A);
-            B.connectNode(C);
-            B.connectNode(D);
+            Node A=null, B=null, C=null, D=null, E=null;
 
-            C.connectNode(D);
-            D.connectNode(E);
+            // Add and connect nodes.
+            B = addNetNode(new Node(activeNodes, "192.168.0.100", "224.0.0.1"));
+            Thread.sleep(200);
 
-            System.out.println("\n= = = = = = = = = = = = = = = = = = = = =\n" +
-                               "Everything BEFORE THE SCHEDULING:\n");
-            System.out.println();
-            for(Node i : netNodes){
-                System.out.println(i);
-            }
+            A = addNetNode(new Node(activeNodes, "192.168.0.101", "224.0.0.2", Arrays.asList("224.0.0.1"),
+                    Collections.singletonList(B) ));
+            Thread.sleep(200);
 
-            scheduleThread.start();
+            C = addNetNode(new Node(activeNodes, "192.168.0.102", null, null,
+                    Collections.singletonList(B) ));
+            Thread.sleep(200);
 
-            // Wait X ms, and send packets.
-            try {
-                Thread.sleep(1000);
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
+            D = addNetNode(new Node(activeNodes, "192.168.0.103", null, Arrays.asList("224.0.0.2"),
+                    Arrays.asList(B, C) ));
+            Thread.sleep(200);
 
+            E = addNetNode(new Node(activeNodes, "192.168.0.104", null, Arrays.asList("224.0.0.1") ,
+                    Collections.singletonList(D) ));
+
+            Thread.sleep(1000);
+
+            // Send 1st round packets.
             System.out.println("\n= = = = = = = = = = = = = = = = = = = = =\nSENDING IP PACKETS!!!\n");
             IPPacket pack = new IPPacket(Packet.CastMode.UNICAST, A.getIpAddress(), E.getIpAddress(), 16, "Kawaii nya nya :3");
             A.sendPacket(pack);
 
-            System.out.println("\n= = = = = = = = = = = = = = = = = = = = =\nSENDING MultiCast IP PACKETS!!!\n");
-            pack = new IPPacket(Packet.CastMode.MULTICAST, A.getIpAddress(), A.getMulticastSourceAddress(), 16, "Kawaii nya nya :3");
-            A.sendPacket(pack);
+            /*System.out.println("\n= = = = = = = = = = = = = = = = = = = = =\nSENDING MultiCast IP PACKETS!!!\n");
+            pack = new IPPacket(Packet.CastMode.MULTICAST, B.getIpAddress(), B.getMulticastSourceAddress(), 16, "Kawaii nya nya :3");
+            B.sendPacket(pack);*/
 
-            // Wait X ms, and stop.
-            try {
-                Thread.sleep(1000);
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
+            Thread.sleep(500);
+
+            showNodeData("\n********************\nNode routing tables BEFORE REMOVAL:\n**********************\n");
+
+            // Remove some nodes.
+            B.disconnectAllNodes();
+
+            Thread.sleep(1000);
+
             endRequest.set(true);
             synchronized (this){
                 this.notify();
             }
 
-            //Wait until MAX_REFRESH refreshes happened.
-            /*try {
-                synchronized (this) {
-                    this.wait();
-                }
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }*/
-
-        } catch ( Exception e ){
-            System.out.println("\n^^^^^^^^^^^^^^^\nException occured: "+e);
+        } catch ( Exception e ) {
+            System.out.println("\n^^^^^^^^^^^^^^^\nException occured: " + e);
         } finally {
             // At the end of Packet Scheduler propagation, check the Routing Tables.
-            System.out.println("\n===============================\nPropagation End!\nRouting tables:\n");
-            for(Node i : netNodes){
-                System.out.println(i.customToString(false, false, true, true, true));
-                //System.out.println("\n["+i.getIpAddress()+"]: Routing Table:\n"+ i.getRoutingTable() );
-            }
+            showNodeData("Propagation End! Node routing tables:");
         }
     }
+
+    private void showNodeData(String msg){
+        System.out.println("\n===============================\n"+msg+"\n");
+        for(Node i : netNodes){
+            System.out.println(i.customToString(true, false, true, true, true));
+        }
+    }
+
+    /** ==================== UI Land =======================
+     * Runs the Console UI to interactively control the network.
+     */
+    public void runUserInterface(){
+        System.out.println("For help type \"help\" or \"h\"");
+        Scanner scn = new Scanner( System.in );
+        boolean quit = false;
+        while( !quit ){
+            System.out.print("\n>> ");
+            try{
+                Iterator<String> inp = Arrays.asList( scn.nextLine().split("\\s+") ).iterator();
+                if(inp.hasNext()) {
+                    switch (inp.next()) {
+                        case "exit":
+                        case "e":
+                            quit = true;
+                            break;
+
+                        case "help":
+                        case "h":
+                            System.out.println( displayHelp() );
+                            break;
+
+                        case "add":
+                        case "a":
+                            Node node = new Node(activeNodes);
+                            while(inp.hasNext()){
+                                String cur = inp.next(), IP = inp.next();
+                                if(IP.matches(Packet.IPV4_MULTICAST_REGEX)){
+                                    if(cur.equals("-ms"))
+                                         node.setMulticastSourceAddress(IP);
+                                    else if(cur.equals("-mg"))
+                                         node.addMulticastGroup(IP);
+                                    else throw new InputMismatchException(cur);
+                                }
+                                else if(IP.matches(Packet.IPV4_REGEX_STRING)){
+                                     if(cur.equals("-ip"))
+                                         node.setIpAddress(IP);
+                                     else if(cur.equals("-n") && node.isReady())
+                                         node.connectNode( getNodeByIP(IP) );
+                                     else throw new InputMismatchException(cur);
+                                }
+                                else throw new InputMismatchException(IP);
+                            }
+                            if(!node.isReady())
+                                System.out.println("Node is not ready! IP was not supplied!");
+                            else
+                                addNetNode( node );
+                            break;
+
+                        case "query":
+                        case "q":
+                            if((node = getNodeByIP( inp.next() )) != null ){
+                                System.out.println("\n-----------------------------------------\nNode data:\n"+
+                                node.customToString(true, true, true, true, true) );
+                            }
+                            break;
+
+                        case "list":
+                        case "l":
+                            System.out.println("\nListing all nodes in the network:");
+                            for(Node n : netNodes){
+                                System.out.print(" ["+n.getIpAddress()+"] -> ");
+                                for(String m : n.getNeigborIPs())
+                                    System.out.print( m + " " );
+                                System.out.println();
+                            }
+                            break;
+
+                        case "send":
+                        case "s":
+                            String s1 = inp.next(), src, dest;
+                            IPPacket pack = new IPPacket();
+                            //if(s1.equals("-v"))
+
+                            break;
+
+                        default:
+                            throw new NoSuchElementException();
+                    }
+                }
+
+            } catch (InputMismatchException e){
+                System.out.println("Wrong input format!");
+            } catch (NoSuchElementException e){
+                System.out.println("Illegal input! Maybe try \"help\"?");
+            } catch (IllegalStateException e){
+                System.out.println("Fatal exception occured: "+e);
+                break;
+            } catch (Node.NodeConnectException e){
+                System.out.println(e);
+            }
+        }
+        // Stop the network simulation.
+        System.out.println("Posting quit message to the Network Scheduler...");
+        endRequest.set(true);
+        synchronized (this){
+            this.notify();
+        }
+    }
+
+    public String displayHelp(){
+        return "Available commands:\n add (a) -ip IP [-ms MultiCastSrc] [-mg MulticastGroups]... [-n Neighbors]... - add node\n " +
+                "query (q) node - query node info:\n list (l) - list IP addresses of all nodes on network\n " +
+                "remove (r) node - remove node from network\n connect (c) NODE node1 node2... - connect NODE with " +
+                "nodes node1, node2, ...\n disconnect (d) NODE node1 node2... - disconnect nodes node1, node2... " +
+                "from node NODE.\n send (s) [-v] src dest - send an IP packet from node src to dest, if v - verbose. " +
+                "Multicast IP addresses can be specified too.\n help (h) - display this message.\n " +
+                "exit (e) - quits the simulation.\n";
+    }
+
 }

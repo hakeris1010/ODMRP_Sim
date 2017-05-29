@@ -2,6 +2,8 @@ package NetworkSim;
 
 import java.util.*;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -95,7 +97,7 @@ public class Node implements Comparable {
     }
 
     // Is node working at the moment
-    private boolean down = false;
+    private AtomicBoolean down = new AtomicBoolean(false), isReady = new AtomicBoolean(false);
 
     // Node's IP (assigned by itself (?))
     private String ipAddress;
@@ -108,14 +110,14 @@ public class Node implements Comparable {
     private final Set<String> multicastReceivers = new TreeSet<>();
 
     // The nodes this node is directly connected to.
-    private final Set<Node> neighbors = Collections.synchronizedSortedSet(new TreeSet<>());
+    private final List<Node> neighbors = Collections.synchronizedList(new ArrayList<>());
 
     // The tables and other structures of Routing Protocol being used (in this case ODMRP).
     private final ODMRP_Proto odmrp = new ODMRP_Proto();
 
     // Pending packet queues
-    private final Queue<Packet> pendingReceivePackets = new LinkedList<>();
-    private final Queue<Packet> pendingSendPackets = new LinkedList<>();
+    private final Queue<Packet> pendingReceivePackets = new ConcurrentLinkedQueue<>();
+    private final Queue<Packet> pendingSendPackets = new ConcurrentLinkedQueue<>();
 
     // A set containing routes we are requesting at the moment, it helps to avoid loops.
     private final SortedSet<String> routeRequestCache = new TreeSet<>();
@@ -133,12 +135,15 @@ public class Node implements Comparable {
      * Constructors.
      * We can construct this node by specifying the nodes to connect to, too.
      */
-    public Node(){ }
+    public Node(BlockingQueue<Node> actNodeQueue){
+        activeNodes.set(actNodeQueue);
+    }
     public Node(BlockingQueue<Node> actNodeQueue, String ip, String multicastIp){
         activeNodes.set(actNodeQueue);
         ipAddress = ip;
         multicastSourceAddress = multicastIp;
         multicastGroups.add(ipAddress); // Our IP is also a multicast group.
+        this.isReady.set(true);
     }
     public Node(BlockingQueue<Node> actNodeQueue, String ip, String multicastIp, List<String> groups, List<Node> connectNodes){
         this(actNodeQueue, ip, multicastIp);
@@ -175,6 +180,18 @@ public class Node implements Comparable {
     public String getMulticastSourceAddress(){ return multicastSourceAddress; }
     public String[] getParticipatedMulticastGroups(){ return (String[])(multicastGroups.toArray()); }
 
+    public void setIpAddress(String ip){
+        if(!this.isReady.get()) {
+            ipAddress = ip;
+            this.isReady.set(true);
+        }
+    }
+    public void setMulticastSourceAddress(String adr){
+        multicastSourceAddress = adr;
+    }
+
+    public boolean isReady(){ return this.isReady.get(); }
+
     public void addMulticastGroup(String... groupAddr){
         multicastGroups.addAll(Arrays.asList(groupAddr));
     }
@@ -184,25 +201,39 @@ public class Node implements Comparable {
     public String getRoutingTable(){ return odmrp.routingTableToString(); }
     public String getForwardingGroupTable(){ return odmrp.forwardingTableToString(); }
 
+    public String[] getNeigborIPs(){
+        ArrayList<String> lst = new ArrayList<>();
+        for(int i=0; i<neighbors.size(); i++){
+            lst.add( neighbors.get(i).getIpAddress() );
+        }
+        return (String[])(lst.toArray());
+    }
+
     /**
      * Adds new node to the current node's network.
      * - Typically called by the node that wants to add itself, after discovering this
      *   node by using this node's advertisement data.
      * - Authentication and stuff happens there.
      * - Notice that this method adds node at Level 3 (Network).
+     * @param add - if true, node will be addes. If false, removed.
      * @param node - the node to add to current node's network.
      * @param firstWay - true if first-way connection is being made.
      *                 False if first-way already made, and making back-way connection.
      */
-    private void connectNodePriv(Node node, boolean firstWay) throws NodeConnectException {
+    private void addRemoveNodePriv(boolean add, Node node, boolean firstWay) throws NodeConnectException {
+        if(!this.isReady.get()) return;
+
         // Add only if node hasn't got same IP as this, and if there isn't a neighbor with the IP of node being added.
-        if(!node.ipAddress.equals(this.ipAddress) && neighbors.add(node)) {
+        if(node!=null && !node.ipAddress.equals(this.ipAddress) && (add ? !neighbors.contains(node) : neighbors.contains(node))) {
+            if(add) neighbors.add(node);
+            else neighbors.remove(node);
+
             if(firstWay)
-                node.connectNodePriv(this, false);
+                node.addRemoveNodePriv(add, this, false);
             Logger.logfn("["+this.ipAddress+"] connected with ["+node.ipAddress+"]");
         }
         else {
-            throw new NodeConnectException("Connecting node "+this.ipAddress+" to node "+node.ipAddress);
+            throw new NodeConnectException("Connecting node "+this.ipAddress+" to node "+(node!=null ? node.ipAddress : "(null)"));
         }
     }
 
@@ -210,7 +241,21 @@ public class Node implements Comparable {
      * Public front-end to connectNodePriv()
      */
     public void connectNode(Node node){
-        connectNodePriv(node, true);
+        addRemoveNodePriv(true, node, true);
+    }
+
+    /**
+     * Public front end to node disconnecting.
+     */
+    public void disconnectNode(Node node){
+        addRemoveNodePriv(false, node, true);
+    }
+
+    public void disconnectAllNodes(){
+        if(!this.isReady.get()) return;
+        for(int i=0; i<neighbors.size(); i++){
+            addRemoveNodePriv(false, neighbors.get(i), true);
+        }
     }
 
     /**
@@ -219,6 +264,8 @@ public class Node implements Comparable {
      * @return time in millis when refresh will be needed.
      */
     long checkIfProcessingNeeded(){
+        if(!this.isReady.get()) return 0;
+
         long time = odmrp.getLastRouteRefresh() + ODMRP_Proto.DEFAULT_ROUTE_REFRESH;
         if(time < System.currentTimeMillis() || !pendingReceivePackets.isEmpty() || !pendingSendPackets.isEmpty() )
             activeNodes.get().add(this);
@@ -247,6 +294,8 @@ public class Node implements Comparable {
      *  @return true, if active operation was processed, false if no operation was processed.
      */
     public boolean process(){
+        if(!this.isReady.get()) return false;
+
         Logger.logfn("\n["+ipAddress+"]: Processing.");
         Packet recPack = null, sentPack = null;
 
@@ -390,11 +439,13 @@ public class Node implements Comparable {
                     } else { // If packet is not meant for us, route it.
                         if (pck.timeToLive > 1) {
                             (pck.timeToLive)--;
-                            (pck.hopsTraveled)+=1;
+                            (pck.hopsTraveled)++;
 
                             // If packet is Unicast, route it. If no route is found, discard packet.
-                            if (pck.mode == Packet.CastMode.UNICAST && !routePacket(pck))
-                                Logger.logfn("Packet can't be routed! No valid route found!");
+                            if (pck.mode == Packet.CastMode.UNICAST){
+                                if( !routePacket(pck) )
+                                    Logger.logfn("Packet can't be routed! No valid route found!");
+                            }
                             else if (pck.mode == Packet.CastMode.BROADCAST || (pck.mode == Packet.CastMode.MULTICAST &&
                                     odmrp.getGroupEntryByID(pck.destAddr, true) != null)) {
                                 Logger.logfn("Packet is broadcast, or FG_FLAG for the Multicast group is set. Broadcasting packet.");
@@ -415,7 +466,7 @@ public class Node implements Comparable {
 
 
     private boolean putPacketToQueue(Packet pack, Queue<Packet> pendingQue, String msg, boolean putToActiveNodes){
-        if(this.down) // If Node Down flag set, don't perform anything.
+        if(this.down.get() || !this.isReady.get()) // If Node Down flag set, don't perform anything.
             return false;
         // Add packet to the pending packet queue.
         if(pendingQue.size() >= PENDING_PACKET_QUESIZE)
@@ -516,9 +567,9 @@ public class Node implements Comparable {
      * @return neighbor node, if exists, or null, if no node with that IP found.
      */
     private Node getNeighborByIP(String ip){
-        for(Node n : neighbors){
-            if(n.getIpAddress().equals(ip))
-                return n;
+        for(int i = 0; i<neighbors.size(); i++){
+            if(neighbors.get(i).getIpAddress().equals(ip))
+                return neighbors.get(i);
         }
         return null;
     }
@@ -553,9 +604,9 @@ public class Node implements Comparable {
      */
     private boolean broadcastPacket(Packet pack, List<String> except){
         boolean accepted = false;
-        for(Node n : neighbors){
-            if((except!=null && !except.contains(n.ipAddress)) || except==null){
-                if(n.acceptPacket(pack))
+        for(int i=0; i<neighbors.size(); i++){
+            if((except!=null && !except.contains(neighbors.get(i).ipAddress)) || except==null){
+                if(neighbors.get(i).acceptPacket( pack ))
                     accepted = true;
             }
         }
@@ -563,27 +614,11 @@ public class Node implements Comparable {
     }
 
     /**
-     * @return IP address type - multicast, unicast, or broadcast.
-     */
-    private Packet.CastMode getAddressType(String ip){
-        if(ip.contains(":")) { // IPv6
-            return Packet.CastMode.NOADDR; // Not yet implemented.
-        }
-        // IPv4
-        else if(ip.matches(Packet.IPV4_MULTICAST_REGEX))
-            return Packet.CastMode.MULTICAST;
-        else if(ip.equals(Packet.IPV4_BROADCAST_REGEX))
-            return Packet.CastMode.BROADCAST;
-
-        return Packet.CastMode.NOADDR;
-    }
-
-    /**
      * Pass packet data to Transport Layer (4) from Network Layer (3).
      * @param pack - packet data.
      */
     void passToTransportLayer(IPPacket pack){
-        System.out.println("\n----------------------------\nGot Packet: "+pack+"Data: "+
+        System.out.println("\n----------------------------\n["+ipAddress+"] Got Packet: "+pack+"Data: "+
                 pack.dataPayload+"\n---------------------------\n");
     }
 
@@ -593,6 +628,9 @@ public class Node implements Comparable {
      */
     public String customToString(boolean neighbors, boolean multicastGroups, boolean multicastReceivers,
                                  boolean routingTable, boolean forwardingTable){
+        if(!this.isReady.get())
+            return "Node is not yet ready.";
+
         StringBuilder ret = new StringBuilder();
         ret.append("Node: [").append(ipAddress).append("]: Multicast source address: ").append(multicastSourceAddress);
 
@@ -610,8 +648,8 @@ public class Node implements Comparable {
         }
         if(neighbors) {
             ret.append("\n Neighbors: ");
-            for (Node n : this.neighbors) {
-                ret.append(n.ipAddress).append(" , ");
+            for (int i=0; i< this.neighbors.size(); i++) {
+                ret.append(this.neighbors.get(i).ipAddress).append(" , ");
             }
         }
         if(routingTable){
