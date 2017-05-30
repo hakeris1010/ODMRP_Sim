@@ -100,9 +100,11 @@ public class Network {
         return null;
     }
 
-    private Node addNetNode(Node node){
+    private Node addNetNode(Node node) throws Node.NodeConnectException{
         System.out.println("Adding node:"+node);
-        netNodes.add(node);
+        if(node!=null && getNodeByIP(node.getIpAddress()) == null)
+            netNodes.add(node);
+        else throw new Node.NodeConnectException("Node exists!");
         return node;
     }
 
@@ -152,16 +154,16 @@ public class Network {
 
             // Send 1st round packets.
             System.out.println("\n= = = = = = = = = = = = = = = = = = = = =\nSENDING IP PACKETS!!!\n");
-            IPPacket pack = new IPPacket(Packet.CastMode.UNICAST, A.getIpAddress(), E.getIpAddress(), 16, "Kawaii nya nya :3");
+            IPPacket pack = new IPPacket(Packet.CastMode.UNICAST, A.getIpAddress(), E.getIpAddress(), 16, "Unicast packet", 0, true);
             A.sendPacket(pack);
 
-            /*System.out.println("\n= = = = = = = = = = = = = = = = = = = = =\nSENDING MultiCast IP PACKETS!!!\n");
-            pack = new IPPacket(Packet.CastMode.MULTICAST, B.getIpAddress(), B.getMulticastSourceAddress(), 16, "Kawaii nya nya :3");
-            B.sendPacket(pack);*/
+            System.out.println("\n= = = = = = = = = = = = = = = = = = = = =\nSENDING MultiCast IP PACKETS!!!\n");
+            pack = new IPPacket(Packet.CastMode.MULTICAST, B.getIpAddress(), B.getMulticastSourceAddress(), 16, "Multicast packet", 0, true);
+            B.sendPacket(pack);
 
             Thread.sleep(500);
 
-            showNodeData("\n********************\nNode routing tables BEFORE REMOVAL:\n**********************\n");
+            //showNodeData("\n********************\nNode routing tables BEFORE REMOVAL:\n**********************\n");
 
             // Remove some nodes.
             B.disconnectAllNodes();
@@ -260,20 +262,75 @@ public class Network {
                         case "send":
                         case "s":
                             String s1 = inp.next(), src, dest;
-                            IPPacket pack = new IPPacket();
-                            //if(s1.equals("-v"))
+                            if(s1.equals("-v"))
+                                src = inp.next();
+                            else
+                                src = s1;
+                            dest = inp.next();
+                            if(!src.matches(Packet.IPV4_REGEX_STRING) || !dest.matches(Packet.IPV4_REGEX_STRING))
+                                throw new InputMismatchException("Wrong IP Address.");
+                            if((node = getNodeByIP(src)) == null)
+                                throw new InputMismatchException("Wrong source!");
+
+                            String payld = "";
+                            while(inp.hasNext()){
+                                payld += " " + inp.next();
+                            }
+                            if(payld.equals(""))
+                                payld = "Nice packet";
+
+                            IPPacket pack = new IPPacket(Packet.getAddressType(dest), src, dest, 16, payld, 0, false);
+                            System.out.println("Sending IP Packet from "+pack.sourceAddr+" to "+pack.destAddr);
+                            pack.verbose = s1.equals("-v");
+                            node.sendPacket(pack);
 
                             break;
 
+                        case "route":
+                        case "ro":
+                            src = inp.next();
+                            dest = inp.next();
+                            // System.out.println("Src.IP: "+src+", Dst.IP: "+dest);
+                            node = getNodeByIP(src);
+                            if(node==null)
+                                throw new NoSuchElementException("Node with ip "+src+" does not exist!");
+                            Routing.RoutingEntry ror = node.getNextHopToDestination( dest );
+                            if(ror == null)
+                                System.out.println("No route to destination!");
+                            else
+                                System.out.println("dst: "+ror.destinationAddress+", nextHop: "+ror.nextHopAddress+", cost: "+ror.cost);
+                            break;
+
+                        case "connect":
+                        case "c":
+                            Node n2, n1 = getNodeByIP(inp.next());
+                            if(n1 == null)
+                                throw new NoSuchElementException();
+                            while(inp.hasNext()){
+                                n2 = getNodeByIP( inp.next() );
+                                if(n2!=null)
+                                    n1.connectNode(n2);
+                                else
+                                    throw new NoSuchElementException("No such node!");
+                            }
+                            break;
+
+                        case "remove":
+                            Node n = getNodeByIP(inp.next());
+                            System.out.println("Removing node: "+n.getIpAddress());
+                            n.disconnectAllNodes();
+                            netNodes.remove(n);
+                            break;
+
                         default:
-                            throw new NoSuchElementException();
+                            throw new NoSuchElementException("No valid command found!");
                     }
                 }
 
             } catch (InputMismatchException e){
-                System.out.println("Wrong input format!");
+                System.out.println("Wrong input format! "+e.getMessage());
             } catch (NoSuchElementException e){
-                System.out.println("Illegal input! Maybe try \"help\"?");
+                System.out.println("Illegal input! Maybe try \"help\"? : "+e.getMessage());
             } catch (IllegalStateException e){
                 System.out.println("Fatal exception occured: "+e);
                 break;
@@ -291,7 +348,8 @@ public class Network {
 
     public String displayHelp(){
         return "Available commands:\n add (a) -ip IP [-ms MultiCastSrc] [-mg MulticastGroups]... [-n Neighbors]... - add node\n " +
-                "query (q) node - query node info:\n list (l) - list IP addresses of all nodes on network\n " +
+                "query (q) node - query node info:\n route (ro) NODE DEST - query route to destination DEST\n " +
+                "list (l) - list IP addresses of all nodes on network\n " +
                 "remove (r) node - remove node from network\n connect (c) NODE node1 node2... - connect NODE with " +
                 "nodes node1, node2, ...\n disconnect (d) NODE node1 node2... - disconnect nodes node1, node2... " +
                 "from node NODE.\n send (s) [-v] src dest - send an IP packet from node src to dest, if v - verbose. " +

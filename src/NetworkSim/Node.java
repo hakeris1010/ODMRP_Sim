@@ -201,12 +201,16 @@ public class Node implements Comparable {
     public String getRoutingTable(){ return odmrp.routingTableToString(); }
     public String getForwardingGroupTable(){ return odmrp.forwardingTableToString(); }
 
-    public String[] getNeigborIPs(){
+    public List<String> getNeigborIPs(){
         ArrayList<String> lst = new ArrayList<>();
         for(int i=0; i<neighbors.size(); i++){
             lst.add( neighbors.get(i).getIpAddress() );
         }
-        return (String[])(lst.toArray());
+        return lst;
+    }
+
+    public Routing.RoutingEntry getNextHopToDestination(String dest){
+        return odmrp.getRouteForDestination(dest);
     }
 
     /**
@@ -217,7 +221,7 @@ public class Node implements Comparable {
      * - Notice that this method adds node at Level 3 (Network).
      * @param add - if true, node will be addes. If false, removed.
      * @param node - the node to add to current node's network.
-     * @param firstWay - true if first-way connection is being made.
+     * @param firstWay - true if first-waObjecty connection is being made.
      *                 False if first-way already made, and making back-way connection.
      */
     private void addRemoveNodePriv(boolean add, Node node, boolean firstWay) throws NodeConnectException {
@@ -343,6 +347,7 @@ public class Node implements Comparable {
                             // by a Join Query. Note that on Multicast Group field we specify the Destination IP of the sendPacket,
                             // so the node with that IP will send back a Join Reply.
                             Logger.logfn("No valid route found for packet!");
+                            System.out.println("No valid route found for packet!");
                             //pendingSendPackets.offer(sendPack);
                             //routeRequestCache.add(sendPack.destAddr);
                             joinQueryNext = prepareJoinQuery(sendPack.destAddr);
@@ -433,6 +438,8 @@ public class Node implements Comparable {
                 else if (recPack instanceof IPPacket) {
                     IPPacket pck = (IPPacket) recPack;
                     Logger.logf("Got IP Packet: " + pck);
+                    if(pck.verbose)
+                        System.out.println("["+this.ipAddress+"]: Got packet: from "+pck.sourceAddr+" to "+pck.destAddr);
 
                     if (pck.destAddr.equals(this.ipAddress) || multicastGroups.contains(pck.destAddr)) { // Check if this recPacket is meant for us.
                         passToTransportLayer(pck);
@@ -496,7 +503,7 @@ public class Node implements Comparable {
     }
 
     public void originateIPPacket(Packet.CastMode castMode, String dest, String payload){
-        sendPacket(new IPPacket(castMode, this.ipAddress, dest, ODMRP_Proto.DEFAULT_TTL, payload));
+        sendPacket(new IPPacket(castMode, this.ipAddress, dest, ODMRP_Proto.DEFAULT_TTL, payload, 0, false));
     }
 
     /** =====================================================================

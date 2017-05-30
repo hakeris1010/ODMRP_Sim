@@ -1,5 +1,6 @@
 package NetworkSim;
 
+import java.util.List;
 import java.util.SortedSet;
 import java.util.TreeSet;
 
@@ -84,17 +85,21 @@ public class Routing {
      * Table-to-String converter.
      * @return string representation of routing table.
      */
-    public String routingTableToString(){
+    public static String routingTableToString(Iterable<RoutingEntry> routes){
         StringBuilder bld = new StringBuilder();
         bld.append(" ------------------ ------------------ ---------- \n");
         bld.append("| Destination      | Next Hop         | Cost     |\n");
         bld.append(" ================== ================== ========== \n");
-        for(RoutingEntry e : routingTable){
+        for(RoutingEntry e : routes){
             bld.append("| ").append(String.format("%1$16s", e.destinationAddress));
             bld.append(" | ").append(String.format("%1$16s", e.nextHopAddress));
             bld.append(" | ").append(String.format("%1$8s", e.cost)).append(" |");
             bld.append("\n ------------------ ------------------ ---------- \n");
         }
         return bld.toString();
+    }
+
+    public String routingTableToString(){
+        return routingTableToString(this.routingTable);
     }
 }

@@ -13,20 +13,21 @@ public class IPPacket extends Packet {
     String dataPayload;
 
     public IPPacket(){}
-    public IPPacket(CastMode mode, String source, String dest, int ttl, String payload){
-        this.populate(mode, source, dest, ttl, payload);
+    public IPPacket(CastMode mode, String source, String dest, int ttl, String payload, int hops, boolean verb){
+        this.populate(mode, source, dest, ttl, payload, hops, verb);
     }
     public IPPacket(IPPacket pack){
-        this.populate(pack.mode, pack.sourceAddr, pack.destAddr, pack.timeToLive, pack.dataPayload);
+        this.populate(pack.mode, pack.sourceAddr, pack.destAddr, pack.timeToLive, pack.dataPayload, pack.hopsTraveled, pack.verbose);
     }
 
-    private void populate(CastMode mode, String source, String dest, int ttl, String payload){
+    private void populate(CastMode mode, String source, String dest, int ttl, String payload, int hops, boolean verb){
         super.populate(mode);
         sourceAddr = source;
         destAddr = dest;
         timeToLive = ttl;
-        hopsTraveled = 0;
+        hopsTraveled = hops;
         dataPayload = payload;
+        verbose = verb;
     }
 
     @Override
@@ -36,6 +37,7 @@ public class IPPacket extends Packet {
 
     @Override
     public String toString(){
-        return "IPPacket ("+mode+"):\n src: "+sourceAddr+"\n dst: "+destAddr+"\n ttl: "+timeToLive+", hops: "+hopsTraveled+"\n";
+        return "IPPacket ("+mode+"):\n src: "+sourceAddr+"\n dst: "+destAddr+"\n ttl: "+timeToLive+
+                ", hops: "+hopsTraveled+", verbose: "+verbose+"\n";
     }
 }

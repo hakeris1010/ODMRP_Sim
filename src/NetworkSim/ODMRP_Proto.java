@@ -192,8 +192,8 @@ public class ODMRP_Proto extends Routing {
     public static final byte DEFAULT_TTL = 32;
 
     // Intervals, in milliseconds.
-    public static final long DEFAULT_ROUTE_REFRESH = 1000;
-    public static final long DEFAULT_FORWARDING_TIMEOUT = 3000;
+    public static final long DEFAULT_ROUTE_REFRESH = 500;
+    public static final long DEFAULT_FORWARDING_TIMEOUT = 1500;
 
     /** =============================================================================
      * The state data tables.

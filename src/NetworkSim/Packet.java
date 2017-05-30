@@ -43,6 +43,8 @@ public abstract class Packet implements Serializable, Cloneable {
             return Packet.CastMode.MULTICAST;
         else if(ip.equals(Packet.IPV4_BROADCAST_REGEX))
             return Packet.CastMode.BROADCAST;
+        else if(ip.matches(IPV4_REGEX_STRING))
+            return Packet.CastMode.UNICAST;
 
         return Packet.CastMode.NOADDR;
     }

@@ -10,6 +10,7 @@ import java.io.PrintStream;
 public class Logger {
     private static final String logFile = "odmrp.log";
     private static PrintStream stream = System.out;
+    private static final boolean loggerOn = true;
     static{
         try {
             stream = new PrintStream(new FileOutputStream(logFile));
@@ -19,10 +20,12 @@ public class Logger {
     }
 
     public static <T> void logf(T type){
-        stream.print(type);
+        if(loggerOn)
+             stream.print(type);
     }
 
     public static <T> void logfn(T type){
-        stream.println(type);
+        if(loggerOn)
+            stream.println(type);
     }
 }
